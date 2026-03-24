@@ -63,6 +63,11 @@ int erofs_init_metabuf(struct erofs_buf *buf, struct super_block *sb,
 		return 0;
 	}
 	buf->off = sbi->dif0.fsoff;
+#ifdef CONFIG_EROFS_FS_BACKED_BY_MEM
+	if (erofs_is_membacked_mode(sbi))
+		buf->mapping = sbi->dif0.mem_inode->i_mapping;
+	else
+#endif
 	if (erofs_is_fileio_mode(sbi)) {
 		buf->file = sbi->dif0.file;	/* some fs like FUSE needs it */
 		buf->mapping = buf->file->f_mapping;

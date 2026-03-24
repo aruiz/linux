@@ -681,6 +681,14 @@ static int erofs_fc_fill_super(struct super_block *sb, struct fs_context *fc)
 			if (err)
 				return err;
 		}
+#ifdef CONFIG_EROFS_FS_BACKED_BY_MEM
+		erofs_consume_pending_mem_region(&sbi->dif0);
+		if (sbi->dif0.mem_start && sbi->dif0.mem_size) {
+			err = erofs_init_mem_backend(sb);
+			if (err)
+				return err;
+		}
+#endif
 		err = super_setup_bdi(sb);
 		if (err)
 			return err;
@@ -795,6 +803,11 @@ static int erofs_fc_get_tree(struct fs_context *fc)
 	if (IS_ENABLED(CONFIG_EROFS_FS_ONDEMAND) && sbi->fsid)
 		return get_tree_nodev(fc, erofs_fc_fill_super);
 
+#ifdef CONFIG_EROFS_FS_BACKED_BY_MEM
+	if (erofs_has_pending_mem_region())
+		return get_tree_nodev(fc, erofs_fc_fill_super);
+#endif
+
 	ret = get_tree_bdev_flags(fc, erofs_fc_fill_super,
 		IS_ENABLED(CONFIG_EROFS_FS_BACKED_BY_FILE) ?
 			GET_TREE_BDEV_QUIET_LOOKUP : 0);
@@ -865,6 +878,7 @@ static void erofs_sb_free(struct erofs_sb_info *sbi)
 	erofs_free_dev_context(sbi->devs);
 	kfree(sbi->fsid);
 	kfree_sensitive(sbi->domain_id);
+	erofs_release_mem_backend(sbi);
 	if (sbi->dif0.file)
 		fput(sbi->dif0.file);
 	kfree(sbi->volume_name);
@@ -918,6 +932,7 @@ static void erofs_drop_internal_inodes(struct erofs_sb_info *sbi)
 	iput(sbi->managed_cache);
 	sbi->managed_cache = NULL;
 #endif
+	erofs_release_mem_backend(sbi);
 }
 
 static void erofs_kill_sb(struct super_block *sb)
@@ -925,7 +940,7 @@ static void erofs_kill_sb(struct super_block *sb)
 	struct erofs_sb_info *sbi = EROFS_SB(sb);
 
 	if ((IS_ENABLED(CONFIG_EROFS_FS_ONDEMAND) && sbi->fsid) ||
-	    sbi->dif0.file)
+	    erofs_is_membacked_mode(sbi) || sbi->dif0.file)
 		kill_anon_super(sb);
 	else
 		kill_block_super(sb);

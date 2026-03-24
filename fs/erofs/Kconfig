@@ -97,6 +97,10 @@ config EROFS_FS_SECURITY
 
 	  If you are not using a security module, say N.
 
+config EROFS_FS_BACKED_BY_MEM
+	bool
+	depends on EROFS_FS
+
 config EROFS_FS_BACKED_BY_FILE
 	bool "File-backed EROFS filesystem support"
 	depends on EROFS_FS

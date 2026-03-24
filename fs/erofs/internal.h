@@ -45,7 +45,11 @@ struct erofs_device_info {
 	struct file *file;
 	struct dax_device *dax_dev;
 	u64 fsoff, dax_part_off;
-
+#ifdef CONFIG_EROFS_FS_BACKED_BY_MEM
+	struct inode *mem_inode;
+	unsigned long mem_start;
+	unsigned long mem_size;
+#endif
 	erofs_blk_t blocks;
 	erofs_blk_t uniaddr;
 };
@@ -181,6 +185,15 @@ struct erofs_sb_info {
 #define clear_opt(opt, option)	((opt)->mount_opt &= ~EROFS_MOUNT_##option)
 #define set_opt(opt, option)	((opt)->mount_opt |= EROFS_MOUNT_##option)
 #define test_opt(opt, option)	((opt)->mount_opt & EROFS_MOUNT_##option)
+
+static inline bool erofs_is_membacked_mode(struct erofs_sb_info *sbi)
+{
+#ifdef CONFIG_EROFS_FS_BACKED_BY_MEM
+	return sbi->dif0.mem_inode != NULL;
+#else
+	return false;
+#endif
+}
 
 static inline bool erofs_is_fileio_mode(struct erofs_sb_info *sbi)
 {
@@ -471,6 +484,10 @@ static inline void *erofs_vm_map_ram(struct page **pages, unsigned int count)
 	return NULL;
 }
 
+#ifdef CONFIG_EROFS_FS_BACKED_BY_MEM
+extern const struct address_space_operations erofs_mem_aops;
+#endif
+
 static inline const struct address_space_operations *
 erofs_get_aops(struct inode *realinode, bool no_fscache)
 {
@@ -482,6 +499,10 @@ erofs_get_aops(struct inode *realinode, bool no_fscache)
 			  "EXPERIMENTAL EROFS subpage compressed block support in use. Use at your own risk!");
 		return &z_erofs_aops;
 	}
+#ifdef CONFIG_EROFS_FS_BACKED_BY_MEM
+	if (erofs_is_membacked_mode(EROFS_SB(realinode->i_sb)))
+		return &erofs_mem_aops;
+#endif
 	if (IS_ENABLED(CONFIG_EROFS_FS_ONDEMAND) && !no_fscache &&
 	    erofs_is_fscache_mode(realinode->i_sb))
 		return &erofs_fscache_access_aops;
@@ -538,6 +559,21 @@ static inline void z_erofs_exit_subsystem(void) {}
 static inline int z_erofs_init_super(struct super_block *sb) { return 0; }
 #endif	/* !CONFIG_EROFS_FS_ZIP */
 int z_erofs_parse_cfgs(struct super_block *sb, struct erofs_super_block *dsb);
+
+#ifdef CONFIG_EROFS_FS_BACKED_BY_MEM
+void __init erofs_set_mem_region(unsigned long addr, unsigned long size);
+bool erofs_has_pending_mem_region(void);
+void erofs_consume_pending_mem_region(struct erofs_device_info *dif);
+int erofs_init_mem_backend(struct super_block *sb);
+void erofs_release_mem_backend(struct erofs_sb_info *sbi);
+struct bio *erofs_mem_bio_alloc(struct erofs_map_dev *mdev);
+void erofs_mem_submit_bio(struct bio *bio);
+#else
+static inline int erofs_init_mem_backend(struct super_block *sb) { return -EOPNOTSUPP; }
+static inline void erofs_release_mem_backend(struct erofs_sb_info *sbi) {}
+static inline struct bio *erofs_mem_bio_alloc(struct erofs_map_dev *mdev) { return NULL; }
+static inline void erofs_mem_submit_bio(struct bio *bio) {}
+#endif
 
 #ifdef CONFIG_EROFS_FS_BACKED_BY_FILE
 struct bio *erofs_fileio_bio_alloc(struct erofs_map_dev *mdev);
