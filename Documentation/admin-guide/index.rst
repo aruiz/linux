@@ -51,6 +51,7 @@ Booting the kernel
    bootconfig
    kernel-parameters
    efi-stub
+   initramfs
    initrd
 
 
