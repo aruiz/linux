@@ -1,18 +1,15 @@
 // SPDX-License-Identifier: GPL-2.0
 /*
- * Support for erofs-formatted initrd images.
- *
- * Scans the initrd region for EROFS superblocks (optionally preceded by
- * an uncompressed cpio archive for CPU microcode / ACPI table overrides),
- * mounts each erofs image directly from initrd memory using the erofs
- * mem-backed mode, and assembles them into an overlayfs root with a
- * tmpfs upper layer for write support.
+ * Mixed cpio/erofs initrd: scan for segments, mount erofs via mem-backed
+ * mode, extract cpio into tmpfs, assemble with overlayfs for writable root.
  */
 #include <linux/init.h>
 #include <linux/initrd.h>
 #include <linux/fs.h>
+#include <linux/fs_struct.h>
 #include <linux/magic.h>
 #include <linux/mm.h>
+#include <linux/namei.h>
 #include <linux/page-flags.h>
 #include <linux/memblock.h>
 #include <uapi/linux/mount.h>
@@ -21,6 +18,7 @@
 #include "do_mounts_erofs_internal.h"
 
 extern void __init erofs_set_mem_region(unsigned long addr, unsigned long size);
+extern char *unpack_to_rootfs(char *buf, unsigned long len);
 
 static bool initrd_is_erofs;
 static struct initrd_segment initrd_segs[INITRD_MAX_SEGMENTS];
@@ -130,8 +128,32 @@ static unsigned long __init try_parse_erofs(void *buf, unsigned long offset,
 }
 
 /*
+ * Scan forward from @start looking for the beginning of the next
+ * identifiable segment (uncompressed cpio or EROFS).  Returns @len
+ * if nothing is found.
+ */
+static unsigned long __init find_next_segment_start(void *buf,
+						    unsigned long start,
+						    unsigned long len)
+{
+	unsigned long pos;
+
+	for (pos = start; pos < len; pos++) {
+		if (pos + 6 <= len &&
+		    (memcmp(buf + pos, "070701", 6) == 0 ||
+		     memcmp(buf + pos, "070702", 6) == 0))
+			return pos;
+
+		if (try_parse_erofs(buf, pos, len) > 0)
+			return pos;
+	}
+	return len;
+}
+
+/*
  * Scan initrd left-to-right for cpio and erofs segments.  Unrecognized
- * non-NUL trailing data is treated as a single compressed cpio.
+ * non-NUL data (e.g. compressed cpio) extends to the next identifiable
+ * segment boundary.
  */
 int __init initrd_scan_segments(void *buf, unsigned long len,
 				struct initrd_segment *segs, int max_segs,
@@ -171,12 +193,18 @@ int __init initrd_scan_segments(void *buf, unsigned long len,
 			continue;
 		}
 
-		/* Unrecognized data — treat remainder as compressed cpio. */
-		segs[count].type = INITRD_SEG_CPIO;
-		segs[count].offset = offset;
-		segs[count].size = len - offset;
-		count++;
-		break;
+		/* Unrecognized data (e.g. compressed cpio) — find next boundary. */
+		{
+			unsigned long seg_end =
+				find_next_segment_start(buf, offset + 1, len);
+
+			segs[count].type = INITRD_SEG_CPIO;
+			segs[count].offset = offset;
+			segs[count].size = seg_end - offset;
+			count++;
+			offset = seg_end;
+			continue;
+		}
 	}
 
 	if (has_erofs)
@@ -189,9 +217,8 @@ bool __init initrd_has_erofs(void *buf, unsigned long len)
 	bool found_erofs = false;
 	int i;
 
-	initrd_seg_count = initrd_scan_segments(buf, len, initrd_segs,
-						INITRD_MAX_SEGMENTS,
-						&found_erofs);
+	initrd_seg_count = initrd_scan_segments(
+		buf, len, initrd_segs, INITRD_MAX_SEGMENTS, &found_erofs);
 
 	if (found_erofs) {
 		initrd_is_erofs = true;
@@ -199,9 +226,9 @@ bool __init initrd_has_erofs(void *buf, unsigned long len)
 			pr_info("initrd: segment %d: %s at offset %lu, size %lu\n",
 				i,
 				initrd_segs[i].type == INITRD_SEG_EROFS ?
-					"erofs" : "cpio",
-				initrd_segs[i].offset,
-				initrd_segs[i].size);
+					"erofs" :
+					"cpio",
+				initrd_segs[i].offset, initrd_segs[i].size);
 	}
 	return found_erofs;
 }
@@ -211,6 +238,40 @@ bool __init erofs_initrd_is_active(void)
 	return initrd_is_erofs;
 }
 
+static int __init unpack_cpio_to(const char *mountpoint, void *data,
+				 unsigned long len)
+{
+	struct path saved_root, saved_pwd, new_root;
+	char *err;
+	int ret;
+
+	get_fs_root(current->fs, &saved_root);
+	get_fs_pwd(current->fs, &saved_pwd);
+
+	ret = kern_path(mountpoint, LOOKUP_FOLLOW | LOOKUP_DIRECTORY,
+			&new_root);
+	if (ret)
+		goto out;
+
+	set_fs_root(current->fs, &new_root);
+	set_fs_pwd(current->fs, &new_root);
+	path_put(&new_root);
+
+	err = unpack_to_rootfs(data, len);
+	ret = err ? -EIO : 0;
+	if (err)
+		pr_err("initrd: cpio extraction to %s failed: %s\n", mountpoint,
+		       err);
+
+	set_fs_root(current->fs, &saved_root);
+	set_fs_pwd(current->fs, &saved_pwd);
+out:
+	path_put(&saved_root);
+	path_put(&saved_pwd);
+	return ret;
+}
+
+
 static int __init erofs_initrd_mount_layers(void)
 {
 	int i, ret;
@@ -219,25 +280,41 @@ static int __init erofs_initrd_mount_layers(void)
 
 	for (i = 0; i < initrd_seg_count; i++) {
 		char mntpoint[32];
-		unsigned long addr;
-
-		if (initrd_segs[i].type != INITRD_SEG_EROFS)
-			continue;
 
 		snprintf(mntpoint, sizeof(mntpoint), "/initrd_layers/%d", i);
 		init_mkdir(mntpoint, 0755);
 
-		addr = initrd_start + initrd_segs[i].offset;
-		erofs_set_mem_region(addr, initrd_segs[i].size);
+		if (initrd_segs[i].type == INITRD_SEG_EROFS) {
+			unsigned long addr =
+				initrd_start + initrd_segs[i].offset;
 
-		ret = init_mount("none", mntpoint, "erofs", MS_RDONLY, NULL);
-		if (ret) {
-			pr_err("initrd: failed to mount erofs segment %d on %s: %d\n",
-			       i, mntpoint, ret);
-			return ret;
+			erofs_set_mem_region(addr, initrd_segs[i].size);
+
+			ret = init_mount("none", mntpoint, "erofs", MS_RDONLY,
+					 NULL);
+			if (ret) {
+				pr_err("initrd: failed to mount erofs segment %d on %s: %d\n",
+				       i, mntpoint, ret);
+				return ret;
+			}
+		} else {
+			ret = init_mount("tmpfs", mntpoint, "tmpfs", 0, NULL);
+			if (ret) {
+				pr_err("initrd: failed to mount tmpfs for cpio segment %d: %d\n",
+				       i, ret);
+				return ret;
+			}
+
+			ret = unpack_cpio_to(
+				mntpoint,
+				(void *)(initrd_start + initrd_segs[i].offset),
+				initrd_segs[i].size);
+			if (ret) {
+				pr_err("initrd: failed to extract cpio segment %d: %d\n",
+				       i, ret);
+				return ret;
+			}
 		}
-		pr_info("initrd: mounted erofs segment %d on %s\n",
-			i, mntpoint);
 	}
 	return 0;
 }
@@ -268,8 +345,7 @@ static int __init erofs_initrd_setup_overlay(void)
 		       "lowerdir=");
 	for (i = initrd_seg_count - 1; i >= 0; i--) {
 		len += snprintf(opts + len, PAGE_SIZE - len,
-				"/initrd_layers/%d%s",
-				i, i > 0 ? ":" : "");
+				"/initrd_layers/%d%s", i, i > 0 ? ":" : "");
 		if (len >= PAGE_SIZE) {
 			kfree(opts);
 			pr_err("initrd: overlayfs opts too long\n");

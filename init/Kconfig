@@ -1501,13 +1501,13 @@ config INITRD_EROFS
 	help
 	  Enable the kernel to detect erofs images in the initrd region,
 	  mount them directly from memory using the erofs mem-backed mode,
-	  and assemble them as an overlayfs root.  Multiple consecutive
-	  erofs images are supported; they are layered in order using
-	  overlayfs.  A leading uncompressed cpio archive (e.g. CPU
-	  microcode) is detected and unpacked before the erofs images.
+	  and assemble them as an overlayfs root.
 
-	  A tmpfs upper layer makes the resulting root filesystem writable
-	  (writes are stored in RAM and lost on reboot).
+	  Arbitrary interleaving of cpio archives and erofs images is
+	  supported.  Each segment is mounted or extracted as a separate
+	  overlayfs layer, preserving order.  A tmpfs upper layer makes
+	  the resulting root filesystem writable (writes are stored in
+	  RAM and lost on reboot).
 
 	  If unsure, say N.
 
