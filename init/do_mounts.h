@@ -34,6 +34,24 @@ void __init initrd_load(void);
 static inline void initrd_load(void) { }
 #endif
 
+extern int do_retain_initrd;
+
+#ifdef CONFIG_INITRD_EROFS
+extern bool initrd_is_erofs;
+bool __init initrd_has_erofs(void *buf, unsigned long len);
+int __init erofs_initrd_setup(void);
+#else
+#define initrd_is_erofs false
+static inline bool initrd_has_erofs(void *b, unsigned long l)
+{
+	return false;
+}
+static inline int erofs_initrd_setup(void)
+{
+	return -ENODEV;
+}
+#endif
+
 /* Ensure that async file closing finished to prevent spurious errors. */
 static inline void init_flush_fput(void)
 {
