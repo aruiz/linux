@@ -571,7 +571,7 @@ char * __init unpack_to_rootfs(char *buf, unsigned long len)
 	return message;
 }
 
-static int __initdata do_retain_initrd;
+int __initdata do_retain_initrd;
 
 static int __init retain_initrd_param(char *str)
 {
@@ -725,6 +725,11 @@ static void __init do_populate_rootfs(void *unused, async_cookie_t cookie)
 	if (!initrd_start || IS_ENABLED(CONFIG_INITRAMFS_FORCE))
 		goto done;
 
+	if (initrd_has_erofs((void *)initrd_start, initrd_end - initrd_start)) {
+		pr_info("initrd: erofs detected, deferring to prepare_namespace\n");
+		goto out;
+	}
+
 	if (IS_ENABLED(CONFIG_BLK_DEV_RAM))
 		printk(KERN_INFO "Trying to unpack rootfs image as initramfs...\n");
 	else
@@ -756,7 +761,7 @@ done:
 	}
 	initrd_start = 0;
 	initrd_end = 0;
-
+out:
 	init_flush_fput();
 }
 
