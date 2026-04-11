@@ -20,6 +20,8 @@
 #include <linux/slab.h>
 #include <linux/workqueue.h>
 
+#include "do_mounts_erofs_internal.h"
+
 #define INITRD_BLKDEV_MAX 32
 
 struct initrd_blkdev {

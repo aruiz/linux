@@ -35,4 +35,8 @@ unsigned long __init skip_cpio_prefix(void *data, unsigned long len);
 unsigned long __init try_parse_erofs(void *buf, unsigned long offset,
 				     unsigned long len);
 
+dev_t __init initrd_blkdev_create(void *data, unsigned long size,
+				  const char *name);
+void __init initrd_blkdev_add_pages(unsigned long start, unsigned long end);
+
 #endif

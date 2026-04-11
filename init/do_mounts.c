@@ -474,6 +474,17 @@ void __init prepare_namespace(void)
 
 	md_run_setup();
 
+	if (initrd_is_erofs) {
+		int ret = erofs_initrd_setup();
+
+		security_initramfs_populated();
+		if (!ret) {
+			init_chdir("/root");
+			goto do_pivot;
+		}
+		pr_err("Failed to set up erofs initrd, falling through to normal mount\n");
+	}
+
 	if (saved_root_name[0])
 		ROOT_DEV = parse_root_device(saved_root_name);
 
@@ -482,6 +493,8 @@ void __init prepare_namespace(void)
 	if (root_wait)
 		wait_for_root(saved_root_name);
 	mount_root(saved_root_name);
+
+do_pivot:
 	devtmpfs_mount();
 
 	if (init_pivot_root(".", ".")) {
