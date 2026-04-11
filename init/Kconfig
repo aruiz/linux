@@ -1520,6 +1520,27 @@ if BLK_DEV_INITRD
 
 source "usr/Kconfig"
 
+comment "EROFS initrd support requires EROFS_FS=y"
+	depends on !EROFS_FS || EROFS_FS=m
+
+config INITRD_EROFS
+	bool "Support initial ramdisk/ramfs formatted as EROFS"
+	depends on EROFS_FS=y
+	select OVERLAY_FS
+	select TMPFS
+	help
+	  Enable the kernel to detect EROFS images in the initrd region
+	  and mount them directly from memory as a read-only root
+	  filesystem, without unpacking.
+
+	  Arbitrary interleaving of cpio archives and EROFS images is
+	  supported.  Each segment is mounted or extracted as a separate
+	  overlayfs layer, preserving order.  A tmpfs upper layer makes
+	  the resulting root filesystem writable (writes are stored in
+	  RAM and lost on reboot).
+
+	  If unsure, say N.
+
 endif
 
 config BOOT_CONFIG
