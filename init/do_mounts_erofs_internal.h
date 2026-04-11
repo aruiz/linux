@@ -39,4 +39,7 @@ dev_t __init initrd_blkdev_create(void *data, unsigned long size,
 				  const char *name);
 void __init initrd_blkdev_add_pages(unsigned long start, unsigned long end);
 
+unsigned long __init find_next_segment_start(void *buf, unsigned long start,
+					     unsigned long len);
+
 #endif
