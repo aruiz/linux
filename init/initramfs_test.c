@@ -3,9 +3,7 @@
 #include <linux/fcntl.h>
 #include <linux/file.h>
 #include <linux/fs.h>
-#include <linux/init.h>
 #include <linux/init_syscalls.h>
-#include <linux/initrd.h>
 #include <linux/stringify.h>
 #include <linux/timekeeping.h>
 #include "initramfs_internal.h"
@@ -29,18 +27,7 @@ struct initramfs_test_cpio {
 	char *data;
 };
 
-/* regular newc header format */
-#define CPIO_HDR_FMT "%s%08x%08x%08x%08x%08x%08x%08x%08x%08x%08x%08x%08x%08x%s"
-/*
- * Bogus newc header with "0x" prefixes on the uid, gid, and namesize values.
- * parse_header()/simple_str[n]toul() accepted this, contrary to the initramfs
- * specification. hex2bin() now fails.
- */
-#define CPIO_HDR_OX_INJECT \
-	"%s%08x%08x0x%06x0X%06x%08x%08x%08x%08x%08x%08x%08x0x%06x%08x%s"
-
-static size_t fill_cpio(struct initramfs_test_cpio *cs, size_t csz,
-			bool inject_ox, char *out)
+static size_t fill_cpio(struct initramfs_test_cpio *cs, size_t csz, char *out)
 {
 	int i;
 	size_t off = 0;
@@ -51,8 +38,9 @@ static size_t fill_cpio(struct initramfs_test_cpio *cs, size_t csz,
 		size_t thislen;
 
 		/* +1 to account for nulterm */
-		thislen = sprintf(pos,
-			inject_ox ? CPIO_HDR_OX_INJECT : CPIO_HDR_FMT,
+		thislen = sprintf(pos, "%s"
+			"%08x%08x%08x%08x%08x%08x%08x%08x%08x%08x%08x%08x%08x"
+			"%s",
 			c->magic, c->ino, c->mode, c->uid, c->gid, c->nlink,
 			c->mtime, c->filesize, c->devmajor, c->devminor,
 			c->rdevmajor, c->rdevminor, c->namesize, c->csum,
@@ -114,7 +102,7 @@ static void __init initramfs_test_extract(struct kunit *test)
 	/* +3 to cater for any 4-byte end-alignment */
 	cpio_srcbuf = kzalloc(ARRAY_SIZE(c) * (CPIO_HDRLEN + PATH_MAX + 3),
 			      GFP_KERNEL);
-	len = fill_cpio(c, ARRAY_SIZE(c), false, cpio_srcbuf);
+	len = fill_cpio(c, ARRAY_SIZE(c), cpio_srcbuf);
 
 	ktime_get_real_ts64(&ts_before);
 	err = unpack_to_rootfs(cpio_srcbuf, len, NULL);
@@ -189,7 +177,7 @@ static void __init initramfs_test_fname_overrun(struct kunit *test)
 	/* limit overrun to avoid crashes / filp_open() ENAMETOOLONG */
 	cpio_srcbuf[CPIO_HDRLEN + strlen(c[0].fname) + 20] = '\0';
 
-	len = fill_cpio(c, ARRAY_SIZE(c), false, cpio_srcbuf);
+	len = fill_cpio(c, ARRAY_SIZE(c), cpio_srcbuf);
 	/* overwrite trailing fname terminator and padding */
 	suffix_off = len - 1;
 	while (cpio_srcbuf[suffix_off] == '\0') {
@@ -231,7 +219,7 @@ static void __init initramfs_test_data(struct kunit *test)
 	cpio_srcbuf = kmalloc(CPIO_HDRLEN + c[0].namesize + c[0].filesize + 6,
 			      GFP_KERNEL);
 
-	len = fill_cpio(c, ARRAY_SIZE(c), false, cpio_srcbuf);
+	len = fill_cpio(c, ARRAY_SIZE(c), cpio_srcbuf);
 
 	err = unpack_to_rootfs(cpio_srcbuf, len, NULL);
 	KUNIT_EXPECT_NULL(test, err);
@@ -286,7 +274,7 @@ static void __init initramfs_test_csum(struct kunit *test)
 
 	cpio_srcbuf = kmalloc(8192, GFP_KERNEL);
 
-	len = fill_cpio(c, ARRAY_SIZE(c), false, cpio_srcbuf);
+	len = fill_cpio(c, ARRAY_SIZE(c), cpio_srcbuf);
 
 	err = unpack_to_rootfs(cpio_srcbuf, len, NULL);
 	KUNIT_EXPECT_NULL(test, err);
@@ -296,7 +284,7 @@ static void __init initramfs_test_csum(struct kunit *test)
 
 	/* mess up the csum and confirm that unpack fails */
 	c[0].csum--;
-	len = fill_cpio(c, ARRAY_SIZE(c), false, cpio_srcbuf);
+	len = fill_cpio(c, ARRAY_SIZE(c), cpio_srcbuf);
 
 	err = unpack_to_rootfs(cpio_srcbuf, len, NULL);
 	KUNIT_EXPECT_NOT_NULL(test, err);
@@ -318,7 +306,7 @@ static void __init initramfs_test_hardlink(struct kunit *test)
 {
 	char *err, *cpio_srcbuf;
 	size_t len;
-	struct kstat st0 = {}, st1 = {};
+	struct kstat st0, st1;
 	struct initramfs_test_cpio c[] = { {
 		.magic = "070701",
 		.ino = 1,
@@ -342,7 +330,7 @@ static void __init initramfs_test_hardlink(struct kunit *test)
 
 	cpio_srcbuf = kmalloc(8192, GFP_KERNEL);
 
-	len = fill_cpio(c, ARRAY_SIZE(c), false, cpio_srcbuf);
+	len = fill_cpio(c, ARRAY_SIZE(c), cpio_srcbuf);
 
 	err = unpack_to_rootfs(cpio_srcbuf, len, NULL);
 	KUNIT_EXPECT_NULL(test, err);
@@ -383,7 +371,7 @@ static void __init initramfs_test_many(struct kunit *test)
 		};
 
 		c.namesize = 1 + sprintf(thispath, "initramfs_test_many-%d", i);
-		p += fill_cpio(&c, 1, false, p);
+		p += fill_cpio(&c, 1, p);
 	}
 
 	len = p - cpio_srcbuf;
@@ -437,7 +425,7 @@ static void __init initramfs_test_fname_pad(struct kunit *test)
 	} };
 
 	memcpy(tbufs->padded_fname, "padded_fname", sizeof("padded_fname"));
-	len = fill_cpio(c, ARRAY_SIZE(c), false, tbufs->cpio_srcbuf);
+	len = fill_cpio(c, ARRAY_SIZE(c), tbufs->cpio_srcbuf);
 
 	err = unpack_to_rootfs(tbufs->cpio_srcbuf, len, NULL);
 	KUNIT_EXPECT_NULL(test, err);
@@ -463,7 +451,7 @@ static void __init initramfs_test_fname_path_max(struct kunit *test)
 {
 	char *err;
 	size_t len;
-	struct kstat st0 = {}, st1 = {};
+	struct kstat st0, st1;
 	char fdata[] = "this file data will not be unpacked";
 	struct test_fname_path_max {
 		char fname_oversize[PATH_MAX + 1];
@@ -493,7 +481,7 @@ static void __init initramfs_test_fname_path_max(struct kunit *test)
 	memcpy(tbufs->fname_oversize, "fname_oversize",
 	       sizeof("fname_oversize") - 1);
 	memcpy(tbufs->fname_ok, "fname_ok", sizeof("fname_ok") - 1);
-	len = fill_cpio(c, ARRAY_SIZE(c), false, tbufs->cpio_src);
+	len = fill_cpio(c, ARRAY_SIZE(c), tbufs->cpio_src);
 
 	/* unpack skips over fname_oversize instead of returning an error */
 	err = unpack_to_rootfs(tbufs->cpio_src, len, NULL);
@@ -545,6 +533,609 @@ static void __init initramfs_test_hdr_hex(struct kunit *test)
 	kfree(tbufs);
 }
 
+/* Boilerplate for a regular file entry in cpio test arrays */
+#define CPIO_FILE(fname_str)                   \
+	{                                      \
+		.magic = "070701",             \
+		.ino = 1,                      \
+		.mode = S_IFREG | 0777,        \
+		.nlink = 1,                    \
+		.devminor = 1,                 \
+		.namesize = sizeof(fname_str), \
+		.fname = fname_str,            \
+	}
+
+/* Same as CPIO_FILE but with inline data */
+#define CPIO_FILE_DATA(fname_str, data_str)       \
+	{                                         \
+		.magic = "070701",                \
+		.ino = 1,                         \
+		.mode = S_IFREG | 0777,           \
+		.nlink = 1,                       \
+		.filesize = sizeof(data_str) - 1, \
+		.devminor = 1,                    \
+		.namesize = sizeof(fname_str),    \
+		.fname = fname_str,               \
+		.data = data_str,                 \
+	}
+
+#define CPIO_TRAILER                              \
+	{                                         \
+		.magic = "070701",                \
+		.namesize = sizeof("TRAILER!!!"), \
+		.fname = "TRAILER!!!",            \
+	}
+
+/* Test that the consumed out-parameter tracks bytes eaten by a cpio archive */
+static void __init initramfs_test_consumed_cpio(struct kunit *test)
+{
+	char *err, *cpio_srcbuf;
+	size_t len;
+	unsigned long consumed = 0;
+	struct initramfs_test_cpio c[] = {
+		{ CPIO_FILE("consumed_cpio"), { CPIO_TRAILER };
+
+	cpio_srcbuf = kzalloc(ARRAY_SIZE(c) * (CPIO_HDRLEN + PATH_MAX + 3),
+			      GFP_KERNEL);
+
+	len = fill_cpio(c, ARRAY_SIZE(c), cpio_srcbuf);
+
+	err = unpack_to_rootfs(cpio_srcbuf, len, &consumed);
+	KUNIT_EXPECT_NULL(test, err);
+	KUNIT_EXPECT_EQ(test, consumed, len);
+
+	KUNIT_EXPECT_EQ(test, init_unlink(c[0].fname), 0);
+	kfree(cpio_srcbuf);
+}
+
+/*
+ * With consumed != NULL, unpack_to_rootfs should stop cleanly (no error)
+ * when it encounters unrecognised (non-cpio, non-compressed) data after
+ * a valid cpio segment.
+ */
+static void __init initramfs_test_consumed_cpio_then_junk(struct kunit *test)
+{
+	char *err, *buf;
+	size_t cpio_len;
+	unsigned long consumed = 0;
+	size_t junk_sz = 256;
+	struct initramfs_test_cpio c[] = {
+		{ CPIO_FILE_DATA("consumed_cpio_junk", "HELLO"),
+		  { CPIO_TRAILER };
+
+	buf = kzalloc(ARRAY_SIZE(c) * (CPIO_HDRLEN + PATH_MAX + 3) + junk_sz,
+		      GFP_KERNEL);
+
+	cpio_len = fill_cpio(c, ARRAY_SIZE(c), buf);
+
+	/* Append non-cpio, non-compressed junk after the trailer */
+	memset(buf + cpio_len, 'X', junk_sz);
+
+	err = unpack_to_rootfs(buf, cpio_len + junk_sz, &consumed);
+	KUNIT_EXPECT_NULL(test, err);
+	/*
+	 * consumed should account for the cpio segment only; the NUL padding
+	 * between trailer and junk may also be consumed, but never the junk.
+	 */
+	KUNIT_EXPECT_GE(test, consumed, cpio_len);
+	KUNIT_EXPECT_LE(test, consumed, cpio_len + junk_sz);
+
+	KUNIT_EXPECT_EQ(test, init_unlink(c[0].fname), 0);
+	kfree(buf);
+}
+
+/*
+ * Without consumed (NULL), encountering non-cpio data should produce an
+ * error string.
+ */
+static void __init initramfs_test_no_consumed_junk_errors(struct kunit *test)
+{
+	char *err;
+	char junk[64];
+
+	memset(junk, 'X', sizeof(junk));
+
+	err = unpack_to_rootfs(junk, sizeof(junk), NULL);
+	KUNIT_EXPECT_NOT_NULL(test, err);
+}
+
+/*
+ * Two cpio archives concatenated: with consumed != NULL, the first call
+ * should consume exactly the first archive, leaving the second for a
+ * subsequent call.
+ */
+static void __init initramfs_test_consumed_two_cpios(struct kunit *test)
+{
+	char *err, *buf;
+	size_t len1, len2;
+	unsigned long consumed = 0;
+	struct initramfs_test_cpio c1[] = {
+		{ CPIO_FILE("consumed_two_1"), { CPIO_TRAILER };
+	struct initramfs_test_cpio c2[] = {
+		{
+			.magic = "070701",
+			.ino = 2,
+			.mode = S_IFREG | 0777,
+			.nlink = 1,
+			.devminor = 1,
+			.namesize = sizeof("consumed_two_2"),
+			.fname = "consumed_two_2",
+		},
+		{ CPIO_TRAILER };
+
+	buf = kzalloc(4 * (CPIO_HDRLEN + PATH_MAX + 3), GFP_KERNEL);
+
+	len1 = fill_cpio(c1, ARRAY_SIZE(c1), buf);
+	len2 = fill_cpio(c2, ARRAY_SIZE(c2), buf + len1);
+
+	/* First call: should consume exactly the first archive */
+	err = unpack_to_rootfs(buf, len1 + len2, &consumed);
+	KUNIT_EXPECT_NULL(test, err);
+	KUNIT_EXPECT_EQ(test, consumed, len1 + len2);
+
+	KUNIT_EXPECT_EQ(test, init_unlink("consumed_two_1"), 0);
+	KUNIT_EXPECT_EQ(test, init_unlink("consumed_two_2"), 0);
+	kfree(buf);
+}
+
+/*
+ * cpio archive followed by NUL padding then non-cpio data: the NUL-skipping
+ * loop in unpack_to_rootfs should eat the padding, then stop cleanly at
+ * the unrecognised data when consumed is provided.
+ */
+static void __init initramfs_test_consumed_cpio_nul_pad_junk(struct kunit *test)
+{
+	char *err, *buf;
+	size_t cpio_len, total;
+	unsigned long consumed = 0;
+	size_t nul_pad = 64;
+	size_t junk_sz = 128;
+	struct initramfs_test_cpio c[] = {
+		{ CPIO_FILE("consumed_nulpad"), { CPIO_TRAILER };
+
+	total = ARRAY_SIZE(c) * (CPIO_HDRLEN + PATH_MAX + 3) + nul_pad +
+		junk_sz;
+	buf = kzalloc(total, GFP_KERNEL);
+
+	cpio_len = fill_cpio(c, ARRAY_SIZE(c), buf);
+
+	/* NUL padding is already zero from kzalloc; add junk after */
+	memset(buf + cpio_len + nul_pad, 'J', junk_sz);
+
+	err = unpack_to_rootfs(buf, cpio_len + nul_pad + junk_sz, &consumed);
+	KUNIT_EXPECT_NULL(test, err);
+
+	/* Should have consumed the cpio + NUL padding but stopped at junk */
+	KUNIT_EXPECT_GE(test, consumed, cpio_len);
+	KUNIT_EXPECT_LE(test, consumed, cpio_len + nul_pad + junk_sz);
+
+	KUNIT_EXPECT_EQ(test, init_unlink(c[0].fname), 0);
+	kfree(buf);
+}
+
+/*
+ * cpio with file data followed by non-cpio data: ensures consumed is
+ * correct even when body_len > 0.
+ */
+static void __init
+initramfs_test_consumed_cpio_data_then_junk(struct kunit *test)
+{
+	char *err, *buf;
+	size_t cpio_len, junk_sz = 256;
+	unsigned long consumed = 0;
+	struct file *file;
+	struct initramfs_test_cpio c[] = {
+		{ CPIO_FILE_DATA("consumed_data_junk", "FILEDATA"),
+		  { CPIO_TRAILER };
+
+	buf = kzalloc(ARRAY_SIZE(c) * (CPIO_HDRLEN + PATH_MAX + 3) + junk_sz,
+		      GFP_KERNEL);
+
+	cpio_len = fill_cpio(c, ARRAY_SIZE(c), buf);
+	memset(buf + cpio_len, 'Z', junk_sz);
+
+	err = unpack_to_rootfs(buf, cpio_len + junk_sz, &consumed);
+	KUNIT_EXPECT_NULL(test, err);
+	KUNIT_EXPECT_GE(test, consumed, cpio_len);
+
+	file = filp_open(c[0].fname, O_RDONLY, 0);
+	if (!IS_ERR(file)) {
+		char readback[16] = {};
+		size_t n = kernel_read(file, readback, c[0].filesize, NULL);
+
+		KUNIT_EXPECT_EQ(test, n, c[0].filesize);
+		KUNIT_EXPECT_MEMEQ(test, readback, c[0].data, n);
+		fput(file);
+	} else {
+		KUNIT_FAIL(test, "open of extracted file failed");
+	}
+
+	KUNIT_EXPECT_EQ(test, init_unlink(c[0].fname), 0);
+	kfree(buf);
+}
+
+/*
+ * Pure junk with consumed != NULL and no leading cpio: consumed should be 0
+ * and there should be no error (the caller handles unrecognised data).
+ */
+static void __init initramfs_test_consumed_junk_only(struct kunit *test)
+{
+	char *err;
+	unsigned long consumed = 0;
+	char junk[64];
+
+	memset(junk, 'X', sizeof(junk));
+
+	err = unpack_to_rootfs(junk, sizeof(junk), &consumed);
+	KUNIT_EXPECT_NULL(test, err);
+	KUNIT_EXPECT_EQ(test, consumed, (unsigned long)0);
+}
+
+/*
+ * Empty buffer: unpack_to_rootfs should succeed with zero consumed
+ * regardless of the consumed parameter.
+ */
+static void __init initramfs_test_consumed_empty(struct kunit *test)
+{
+	char *err;
+	unsigned long consumed = 42;
+	char dummy = '\0';
+
+	err = unpack_to_rootfs(&dummy, 0, &consumed);
+	KUNIT_EXPECT_NULL(test, err);
+	KUNIT_EXPECT_EQ(test, consumed, (unsigned long)0);
+
+	err = unpack_to_rootfs(&dummy, 0, NULL);
+	KUNIT_EXPECT_NULL(test, err);
+}
+
+/*
+ * cpio without TRAILER followed by junk: consumed should still report
+ * how far we got (the cpio data) and stop at the unrecognised bytes.
+ */
+static void __init initramfs_test_consumed_no_trailer(struct kunit *test)
+{
+	char *err, *buf;
+	size_t cpio_len, junk_sz = 128;
+	unsigned long consumed = 0;
+	struct initramfs_test_cpio c[] = { { CPIO_FILE("consumed_notrailer") };
+
+	buf = kzalloc((CPIO_HDRLEN + PATH_MAX + 3) + junk_sz, GFP_KERNEL);
+
+	cpio_len = fill_cpio(c, ARRAY_SIZE(c), buf);
+	memset(buf + cpio_len, 'Q', junk_sz);
+
+	err = unpack_to_rootfs(buf, cpio_len + junk_sz, &consumed);
+	KUNIT_EXPECT_NULL(test, err);
+	KUNIT_EXPECT_GE(test, consumed, cpio_len);
+
+	KUNIT_EXPECT_EQ(test, init_unlink(c[0].fname), 0);
+	kfree(buf);
+}
+
+/*
+ * Simulate the boundary where cpio NUL padding overlaps with what would be
+ * an EROFS reserved area (first 1024 bytes typically NULs).  The cpio with
+ * trailer is followed by exactly EROFS_SUPER_OFFSET (1024) NUL bytes, then
+ * a fake EROFS magic.  With consumed, unpack_to_rootfs should eat the cpio
+ * and some/all NUL padding, stopping before or at the EROFS magic.
+ */
+static void __init
+initramfs_test_consumed_cpio_erofs_boundary(struct kunit *test)
+{
+	char *err, *buf;
+	size_t cpio_len, total;
+	unsigned long consumed = 0;
+	size_t erofs_reserved = 1024;
+	size_t fake_erofs_sz = 256;
+	struct initramfs_test_cpio c[] = {
+		{ CPIO_FILE("consumed_erofs_bnd"), { CPIO_TRAILER };
+
+	total = ARRAY_SIZE(c) * (CPIO_HDRLEN + PATH_MAX + 3) + erofs_reserved +
+		fake_erofs_sz;
+	buf = kzalloc(total, GFP_KERNEL);
+
+	cpio_len = fill_cpio(c, ARRAY_SIZE(c), buf);
+
+	/*
+	 * Place a fake EROFS magic at the superblock offset within the
+	 * simulated EROFS image.  This is non-cpio, non-compressed data,
+	 * so unpack_to_rootfs with consumed should stop.
+	 */
+	memset(buf + cpio_len + erofs_reserved, 'E', fake_erofs_sz);
+
+	err = unpack_to_rootfs(buf, cpio_len + erofs_reserved + fake_erofs_sz,
+			       &consumed);
+	KUNIT_EXPECT_NULL(test, err);
+
+	/*
+	 * consumed must include the cpio; it may also include NUL padding
+	 * that the NUL-skip loop eats.  It must not extend past the NULs
+	 * into the fake EROFS region.
+	 */
+	KUNIT_EXPECT_GE(test, consumed, cpio_len);
+	KUNIT_EXPECT_LE(test, consumed, cpio_len + erofs_reserved);
+
+	KUNIT_EXPECT_EQ(test, init_unlink(c[0].fname), 0);
+	kfree(buf);
+}
+
+/*
+ * NUL-only buffer with consumed: the NUL-skip loop should eat everything,
+ * consumed == len, no error.
+ */
+static void __init initramfs_test_consumed_all_nuls(struct kunit *test)
+{
+	char *err, *buf;
+	unsigned long consumed = 0;
+	size_t sz = 4096;
+
+	buf = kzalloc(sz, GFP_KERNEL);
+
+	err = unpack_to_rootfs(buf, sz, &consumed);
+	KUNIT_EXPECT_NULL(test, err);
+	KUNIT_EXPECT_EQ(test, consumed, (unsigned long)sz);
+
+	kfree(buf);
+}
+
+/*
+ * cpio archive where the end padding runs right up to the buffer boundary
+ * (no trailing junk at all) with consumed != NULL.
+ */
+static void __init initramfs_test_consumed_exact_fit(struct kunit *test)
+{
+	char *err, *cpio_srcbuf;
+	size_t len;
+	unsigned long consumed = 0;
+	struct initramfs_test_cpio c[] = {
+		{ CPIO_FILE_DATA("consumed_exact_fit", "FIT"), { CPIO_TRAILER };
+
+	cpio_srcbuf = kzalloc(ARRAY_SIZE(c) * (CPIO_HDRLEN + PATH_MAX + 3),
+			      GFP_KERNEL);
+
+	len = fill_cpio(c, ARRAY_SIZE(c), cpio_srcbuf);
+
+	err = unpack_to_rootfs(cpio_srcbuf, len, &consumed);
+	KUNIT_EXPECT_NULL(test, err);
+	KUNIT_EXPECT_EQ(test, consumed, len);
+
+	KUNIT_EXPECT_EQ(test, init_unlink(c[0].fname), 0);
+	kfree(cpio_srcbuf);
+}
+
+static void __init initramfs_test_symlink(struct kunit *test)
+{
+	char *err, *cpio_srcbuf;
+	size_t len;
+	struct kstat st = {};
+	struct initramfs_test_cpio c[] = {
+		{
+			.magic = "070701",
+			.ino = 1,
+			.mode = S_IFLNK | 0777,
+			.nlink = 1,
+			.filesize = sizeof("symlink_dest") - 1,
+			.devminor = 1,
+			.namesize = sizeof("initramfs_test_symlink"),
+			.fname = "initramfs_test_symlink",
+			.data = "symlink_dest",
+		},
+		{ CPIO_TRAILER };
+
+	cpio_srcbuf = kzalloc(ARRAY_SIZE(c) * (CPIO_HDRLEN + PATH_MAX + 3),
+			      GFP_KERNEL);
+
+	len = fill_cpio(c, ARRAY_SIZE(c), cpio_srcbuf);
+
+	err = unpack_to_rootfs(cpio_srcbuf, len, NULL);
+	KUNIT_EXPECT_NULL(test, err);
+
+	KUNIT_EXPECT_EQ(test, init_stat(c[0].fname, &st, AT_SYMLINK_NOFOLLOW),
+			0);
+	KUNIT_EXPECT_TRUE(test, S_ISLNK(st.mode));
+
+	KUNIT_EXPECT_EQ(test, init_unlink(c[0].fname), 0);
+	kfree(cpio_srcbuf);
+}
+
+#ifdef CONFIG_INITRD_EROFS
+#include <uapi/linux/magic.h>
+#include "../fs/erofs/erofs_fs.h"
+
+/*
+ * Helper to fill a minimal EROFS superblock at buf + off + EROFS_SUPER_OFFSET.
+ * @blocks: block count, @blkszbits: log2(block_size),
+ * @feat_incompat: feature_incompat flags.
+ * The image size = blocks << blkszbits.  Caller must ensure buf is large
+ * enough for the reserved area + superblock + the implied image size.
+ */
+static void fill_erofs_sb(void *buf, unsigned long off, u32 blocks,
+			  u8 blkszbits, u32 feat_incompat)
+{
+	struct erofs_super_block *sb = buf + off + EROFS_SUPER_OFFSET;
+
+	memset(sb, 0, sizeof(*sb));
+	sb->magic = cpu_to_le32(EROFS_SUPER_MAGIC_V1);
+	sb->blkszbits = blkszbits;
+	sb->blocks_lo = cpu_to_le32(blocks);
+	sb->feature_incompat = cpu_to_le32(feat_incompat);
+}
+
+struct erofs_parse_case {
+	const char *desc;
+	u32 blocks;
+	u8 blkszbits;
+	u32 feat;
+	size_t buf_size;
+	unsigned long off;
+	unsigned long expected;
+};
+
+static const struct erofs_parse_case erofs_parse_cases[] = {
+	{
+		.desc = "valid 8x4K image at offset 0",
+		.blocks = 8,
+		.blkszbits = 12,
+		.buf_size = 8 * 4096,
+		.expected = 8 * 4096,
+	},
+	{
+		.desc = "min blkszbits (512B)",
+		.blocks = 16,
+		.blkszbits = EROFS_BLKSZBITS_MIN,
+		.buf_size = 16 * 512,
+		.expected = 16 * 512,
+	},
+	{
+		.desc = "blkszbits too low",
+		.blocks = 16,
+		.blkszbits = EROFS_BLKSZBITS_MIN - 1,
+		.buf_size = 8192,
+	},
+	{
+		.desc = "blkszbits too high",
+		.blocks = 1,
+		.blkszbits = EROFS_BLKSZBITS_MAX + 1,
+		.buf_size = 8192,
+	},
+	{
+		.desc = "unsupported feature flag",
+		.blocks = 8,
+		.blkszbits = 12,
+		.feat = EROFS_ALL_FEATURE_INCOMPAT + 1,
+		.buf_size = 8 * 4096,
+	},
+	{
+		.desc = "zero block count",
+		.blocks = 0,
+		.blkszbits = 12,
+		.buf_size = 8192,
+	},
+	{
+		.desc = "image exceeds buffer",
+		.blocks = 8,
+		.blkszbits = 12,
+		.buf_size = 4096,
+	},
+};
+
+static void __init initramfs_test_erofs_parse(struct kunit *test)
+{
+	const struct erofs_parse_case *tc = test->param_value;
+	void *buf;
+	unsigned long result;
+
+	buf = kzalloc(tc->buf_size, GFP_KERNEL);
+	KUNIT_ASSERT_NOT_NULL(test, buf);
+
+	fill_erofs_sb(buf, tc->off, tc->blocks, tc->blkszbits, tc->feat);
+
+	result = try_parse_erofs(buf, tc->off, tc->buf_size);
+	KUNIT_EXPECT_EQ(test, result, tc->expected);
+
+	kfree(buf);
+}
+
+static void erofs_parse_case_desc(const struct erofs_parse_case *tc, char *desc)
+{
+	strscpy(desc, tc->desc, KUNIT_PARAM_DESC_SIZE);
+}
+
+KUNIT_ARRAY_PARAM(erofs_parse, erofs_parse_cases, erofs_parse_case_desc);
+static void __init initramfs_test_erofs_valid_nonzero_offset(struct kunit *test)
+{
+	void *buf;
+	unsigned long result;
+	u32 blocks = 4;
+	u8 blkszbits = 12;
+	size_t img_size = (size_t)blocks << blkszbits;
+	size_t offset = 2048;
+
+	buf = kzalloc(offset + img_size, GFP_KERNEL);
+
+	fill_erofs_sb(buf, offset, blocks, blkszbits, 0);
+
+	result = try_parse_erofs(buf, offset, offset + img_size);
+	KUNIT_EXPECT_EQ(test, result, (unsigned long)img_size);
+
+	/* offset 0 should not find anything */
+	result = try_parse_erofs(buf, 0, offset + img_size);
+	KUNIT_EXPECT_EQ(test, result, (unsigned long)0);
+
+	kfree(buf);
+}
+
+static void __init initramfs_test_erofs_bad_magic(struct kunit *test)
+{
+	void *buf;
+	unsigned long result;
+	struct erofs_super_block *sb;
+	size_t sz = 8 * 4096;
+
+	buf = kzalloc(sz, GFP_KERNEL);
+
+	fill_erofs_sb(buf, 0, 8, 12, 0);
+	sb = buf + EROFS_SUPER_OFFSET;
+	sb->magic = cpu_to_le32(0xDEADBEEF);
+
+	result = try_parse_erofs(buf, 0, sz);
+	KUNIT_EXPECT_EQ(test, result, (unsigned long)0);
+
+	kfree(buf);
+}
+
+static void __init initramfs_test_erofs_buffer_too_small(struct kunit *test)
+{
+	char buf[64] = {};
+	unsigned long result;
+
+	result = try_parse_erofs(buf, 0, sizeof(buf));
+	KUNIT_EXPECT_EQ(test, result, (unsigned long)0);
+
+	result = try_parse_erofs(buf, 0, 0);
+	KUNIT_EXPECT_EQ(test, result, (unsigned long)0);
+}
+
+static void __init initramfs_test_erofs_48bit_blocks(struct kunit *test)
+{
+	void *buf;
+	unsigned long result;
+	struct erofs_super_block *sb;
+	u32 blocks_lo = 4;
+	u8 blkszbits = 12;
+	size_t img_size = (size_t)blocks_lo << blkszbits;
+
+	buf = kzalloc(img_size, GFP_KERNEL);
+
+	fill_erofs_sb(buf, 0, blocks_lo, blkszbits,
+		      EROFS_FEATURE_INCOMPAT_48BIT);
+	sb = buf + EROFS_SUPER_OFFSET;
+	sb->rb.blocks_hi = cpu_to_le16(0);
+
+	result = try_parse_erofs(buf, 0, img_size);
+	KUNIT_EXPECT_EQ(test, result, (unsigned long)img_size);
+
+	kfree(buf);
+}
+
+static void __init initramfs_test_erofs_offset_near_end(struct kunit *test)
+{
+	void *buf;
+	unsigned long result;
+	size_t sz = 2048;
+
+	buf = kzalloc(sz, GFP_KERNEL);
+
+	fill_erofs_sb(buf, 0, 1, 12, 0);
+	/* offset so close to end that reserved area + sb won't fit */
+	result = try_parse_erofs(buf, sz - 64, sz);
+	KUNIT_EXPECT_EQ(test, result, (unsigned long)0);
+
+	kfree(buf);
+}
+#endif /* CONFIG_INITRD_EROFS */
+
 /*
  * The kunit_case/_suite struct cannot be marked as __initdata as this will be
  * used in debugfs to retrieve results after test has run.
@@ -559,24 +1150,32 @@ static struct kunit_case __refdata initramfs_test_cases[] = {
 	KUNIT_CASE(initramfs_test_fname_pad),
 	KUNIT_CASE(initramfs_test_fname_path_max),
 	KUNIT_CASE(initramfs_test_hdr_hex),
+	KUNIT_CASE(initramfs_test_consumed_cpio),
+	KUNIT_CASE(initramfs_test_consumed_cpio_then_junk),
+	KUNIT_CASE(initramfs_test_no_consumed_junk_errors),
+	KUNIT_CASE(initramfs_test_consumed_two_cpios),
+	KUNIT_CASE(initramfs_test_consumed_cpio_nul_pad_junk),
+	KUNIT_CASE(initramfs_test_consumed_cpio_data_then_junk),
+	KUNIT_CASE(initramfs_test_consumed_junk_only),
+	KUNIT_CASE(initramfs_test_consumed_empty),
+	KUNIT_CASE(initramfs_test_consumed_no_trailer),
+	KUNIT_CASE(initramfs_test_consumed_cpio_erofs_boundary),
+	KUNIT_CASE(initramfs_test_consumed_all_nuls),
+	KUNIT_CASE(initramfs_test_consumed_exact_fit),
+	KUNIT_CASE(initramfs_test_symlink),
+#ifdef CONFIG_INITRD_EROFS
+	KUNIT_CASE_PARAM(initramfs_test_erofs_parse, erofs_parse_gen_params),
+	KUNIT_CASE(initramfs_test_erofs_valid_nonzero_offset),
+	KUNIT_CASE(initramfs_test_erofs_bad_magic),
+	KUNIT_CASE(initramfs_test_erofs_buffer_too_small),
+	KUNIT_CASE(initramfs_test_erofs_48bit_blocks),
+	KUNIT_CASE(initramfs_test_erofs_offset_near_end),
+#endif
 	{},
 };
 
-static int __init initramfs_test_init(struct kunit_suite *suite)
-{
-	/*
-	 * unpack_to_rootfs() uses module-static state (victim, byte_count,
-	 * state, ...). The boot-time async do_populate_rootfs() may still be
-	 * running, so wait for it to finish before we call unpack_to_rootfs()
-	 * from the test thread, otherwise the two writers race and crash.
-	 */
-	wait_for_initramfs();
-	return 0;
-}
-
-static struct kunit_suite __refdata initramfs_test_suite = {
+static struct kunit_suite initramfs_test_suite = {
 	.name = "initramfs",
-	.suite_init = initramfs_test_init,
 	.test_cases = initramfs_test_cases,
 };
 kunit_test_init_section_suites(&initramfs_test_suite);

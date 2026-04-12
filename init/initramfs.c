@@ -741,8 +741,6 @@ static void __init populate_initrd_image(char *err)
 #endif /* CONFIG_BLK_DEV_RAM */
 
 #ifdef CONFIG_INITRD_EROFS
-#define EROFS_BLKSZBITS_MIN 9 /* 512 bytes */
-#define EROFS_BLKSZBITS_MAX 30 /* 1 GiB */
 #define EROFS_SB_MINSIZE (EROFS_SUPER_OFFSET + sizeof(struct erofs_super_block))
 
 /* Total number of initrd layers (cpio + EROFS combined). */
@@ -756,8 +754,8 @@ static void __init populate_initrd_image(char *err)
  * Try to parse an EROFS superblock at @buf + @off.
  * Returns the image size in bytes, or 0 if not a valid EROFS image.
  */
-static unsigned long __init try_parse_erofs(void *buf, unsigned long off,
-					    unsigned long len)
+unsigned long __init try_parse_erofs(void *buf, unsigned long off,
+				     unsigned long len)
 {
 	struct erofs_super_block *sb;
 	u64 blocks, img_size;
