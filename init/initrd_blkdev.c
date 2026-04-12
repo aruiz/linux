@@ -8,11 +8,14 @@
  *   1. initrd_blkdev_create()    — creates and registers device during __init
  *   2. initrd_blkdev_add_pages() — records page ranges for deferred freeing
  *   3. initrd_blkdev_shutdown()  — called after the overlay is assembled (or
- *      on the error path).  del_gendisk prevents new opens; put_disk drops
- *      our explicit reference.  Existing EROFS mounts keep the gendisks
- *      alive until switch_root unmounts the overlay.
- *   4. When the final gendisk refcount drops, .free_disk returns the backing
- *      pages to the buddy allocator via free_reserved_page().
+ *      on the error path).  put_disk drops our explicit creation reference.
+ *      del_gendisk is intentionally NOT called: it would mark the disk dead
+ *      via blk_mark_disk_dead(), killing the request queue and preventing
+ *      the overlay from reading EROFS data on demand.
+ *   4. The EROFS mount keeps the gendisk alive via the open block_device.
+ *      When switch_root unmounts the overlay and EROFS, the bdev is closed
+ *      and the final gendisk refcount drops.  .free_disk then returns the
+ *      backing pages to the buddy allocator via free_reserved_page().
  */
 #include <linux/blkdev.h>
 #include <linux/crash_reserve.h>
@@ -20,7 +23,7 @@
 #include <linux/mm.h>
 #include <linux/slab.h>
 
-#define INITRD_BLKDEV_MAX 32
+#include "do_mounts.h"
 
 struct initrd_blkdev {
 	void *data;
@@ -93,7 +96,26 @@ void __init initrd_blkdev_shutdown(void)
 
 	for (i = 0; i < initrd_blk_count; i++) {
 		if (initrd_blk_disks[i]) {
-			del_gendisk(initrd_blk_disks[i]);
+			/*
+			 * Drop only the creation reference — do NOT call
+			 * del_gendisk() here.  del_gendisk() marks the disk
+			 * dead via blk_mark_disk_dead(), which kills the
+			 * request queue and causes all subsequent EROFS reads
+			 * to fail.  The overlay is still live and will read
+			 * from EROFS on demand after this point.
+			 *
+			 * The EROFS mount holds a reference via the open
+			 * block_device, keeping the gendisk (and backing
+			 * pages) alive.  When switch_root unmounts the
+			 * overlay, the EROFS mount releases the bdev, and
+			 * the gendisk is freed via disk_release/free_disk.
+			 *
+			 * Skipping del_gendisk means disk_live() is still
+			 * true at release time, which triggers a one-shot
+			 * WARN_ON_ONCE in disk_release().  This is a known
+			 * trade-off: bdev_unhash (needed to clear disk_live)
+			 * is block-layer internal and not accessible here.
+			 */
 			put_disk(initrd_blk_disks[i]);
 			initrd_blk_disks[i] = NULL;
 		}

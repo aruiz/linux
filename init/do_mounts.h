@@ -34,6 +34,20 @@ void __init initrd_load(void);
 static inline void initrd_load(void) { }
 #endif
 
+#ifdef CONFIG_INITRD_EROFS
+/*
+ * Maximum number of EROFS block devices (a subset of total initrd layers).
+ * Each EROFS layer in the initrd requires a dedicated block device, so this
+ * must not exceed the total layer limit (MAX_INITRD_LAYERS in initramfs.c).
+ */
+#define INITRD_BLKDEV_MAX 32
+
+dev_t __init initrd_blkdev_create(void *data, unsigned long size,
+				  const char *name);
+void __init initrd_blkdev_add_pages(unsigned long start, unsigned long end);
+void __init initrd_blkdev_shutdown(void);
+#endif
+
 /* Ensure that async file closing finished to prevent spurious errors. */
 static inline void init_flush_fput(void)
 {

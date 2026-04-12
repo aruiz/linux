@@ -15,6 +15,7 @@
 #include <linux/namei.h>
 #include <linux/overflow.h>
 #include <linux/magic.h>
+#include <linux/fs_struct.h>
 #include <linux/security.h>
 #include <linux/slab.h>
 #include <linux/string.h>
@@ -22,6 +23,7 @@
 #include <linux/types.h>
 #include <linux/umh.h>
 #include <linux/utime.h>
+#include <uapi/linux/mount.h>
 
 #include <asm/byteorder.h>
 
@@ -31,6 +33,10 @@
 
 static __initdata bool csum_present;
 static __initdata u32 io_csum;
+
+#ifdef CONFIG_INITRD_EROFS
+static bool __initdata erofs_initrd_deferred;
+#endif
 
 static ssize_t __init xwrite(struct file *file, const unsigned char *p,
 		size_t count, loff_t *pos)
@@ -513,13 +519,21 @@ static unsigned long my_inptr __initdata; /* index of next byte to be processed 
  * unpack_to_rootfs - decompress and extract an initramfs archive
  * @buf: input initramfs archive to extract
  * @len: length of initramfs data to process
+ * @consumed: if non-NULL, set to the number of bytes consumed from @buf
  *
  * Returns: NULL for success or an error message string
  *
+ * When @consumed is non-NULL and the loop encounters data that is neither
+ * cpio nor a recognised compression format, it breaks cleanly instead of
+ * reporting an error.  The caller can then inspect the remaining data
+ * (e.g. to check for an EROFS image) and decide how to proceed.
+ *
  * This symbol shouldn't be used externally. It's available for unit tests.
  */
-char * __init unpack_to_rootfs(char *buf, unsigned long len)
+char *__init unpack_to_rootfs(char *buf, unsigned long len,
+			      unsigned long *consumed)
 {
+	char *original_buf = buf;
 	long written;
 	decompress_fn decompress;
 	const char *compress_name;
@@ -566,8 +580,12 @@ char * __init unpack_to_rootfs(char *buf, unsigned long len)
 			pr_err("compression method %s not configured\n",
 			       compress_name);
 			error("decompressor failed");
-		} else
+		} else if (consumed) {
+			/* Let the caller handle unrecognised data */
+			break;
+		} else {
 			error("invalid magic at start of compressed archive");
+		}
 		if (state != Reset)
 			error("junk at the end of compressed archive");
 		this_header = saved_offset + my_inptr;
@@ -578,6 +596,8 @@ char * __init unpack_to_rootfs(char *buf, unsigned long len)
 	/* free any hardlink state collected without optional TRAILER!!! */
 	free_hash();
 	kfree(bufs);
+	if (consumed)
+		*consumed = buf - original_buf;
 	return message;
 }
 
@@ -724,6 +744,17 @@ static void __init populate_initrd_image(char *err)
 #define EROFS_SB_MINSIZE (EROFS_SUPER_OFFSET + sizeof(struct erofs_super_block))
 
 /*
+ * Total number of initrd layers (cpio + EROFS combined).
+ * EROFS layers are additionally bounded by INITRD_BLKDEV_MAX (currently 32,
+ * defined in do_mounts.h), since each EROFS layer requires a block device.
+ */
+#define MAX_INITRD_LAYERS 128
+#define MAX_INITRD_LAYER_DIGITS (sizeof(__stringify(MAX_INITRD_LAYERS)) - 1)
+
+#define INITRD_LAYER_MNT_MAX \
+	(sizeof("/initrd_layers/") + MAX_INITRD_LAYER_DIGITS)
+
+/*
  * Try to parse an EROFS superblock at @buf + @off.
  * Returns the image size in bytes, or 0 if not a valid EROFS image.
  */
@@ -770,69 +801,327 @@ static unsigned long __init try_parse_erofs(void *buf, unsigned long off,
 }
 
 /*
- * Scan for an EROFS superblock anywhere in @buf.  Returns true on the
- * first valid image found.
+ * Mount an EROFS image segment as a read-only layer backed by a
+ * memory block device.
  */
-static bool __init initrd_has_erofs(void *buf, unsigned long len)
+static int __init mount_erofs_layer(int layer, void *buf, unsigned long size)
 {
-	unsigned long off;
+	char mntpoint[INITRD_LAYER_MNT_MAX], devpath[INITRD_LAYER_MNT_MAX];
+	char diskname[INITRD_LAYER_MNT_MAX];
+	dev_t dev;
+	int err;
 
-	for (off = 0; off + EROFS_SB_MINSIZE <= len; off++) {
-		if (try_parse_erofs(buf, off, len)) {
-			pr_info("initrd: EROFS image detected at offset %lu\n",
-				off);
-			return true;
-		}
+	snprintf(mntpoint, sizeof(mntpoint), "/initrd_layers/%d", layer);
+	snprintf(devpath, sizeof(devpath), "/dev/initrd%d", layer);
+	snprintf(diskname, sizeof(diskname), "initrd%d", layer);
+
+	init_mkdir(mntpoint, 0755);
+
+	dev = initrd_blkdev_create(buf, size, diskname);
+	if (!dev) {
+		pr_err("initrd: blkdev creation for layer %d failed\n", layer);
+		return -ENOMEM;
 	}
-	return false;
+
+	create_dev(devpath, dev);
+
+	err = init_mount(devpath, mntpoint, "erofs", MS_RDONLY, NULL);
+	if (err)
+		pr_err("initrd: EROFS mount for layer %d failed: %d\n", layer,
+		       err);
+	return err;
+}
+
+/*
+ * Extract a cpio (or compressed cpio) segment into a tmpfs and seal
+ * it read-only.  Reports the number of bytes consumed through @consumed.
+ */
+static int __init mount_cpio_layer(int layer, char *buf, unsigned long len,
+				   unsigned long *consumed)
+{
+	char mntpoint[INITRD_LAYER_MNT_MAX];
+	struct path saved_root, saved_pwd;
+	char *err;
+	int ret;
+
+	*consumed = 0;
+
+	snprintf(mntpoint, sizeof(mntpoint), "/initrd_layers/%d", layer);
+	init_mkdir(mntpoint, 0755);
+
+	ret = init_mount("tmpfs", mntpoint, "tmpfs", 0, NULL);
+	if (ret) {
+		pr_err("initrd: tmpfs mount for layer %d failed: %d\n", layer,
+		       ret);
+		return ret;
+	}
+
+	get_fs_root(current->fs, &saved_root);
+	get_fs_pwd(current->fs, &saved_pwd);
+
+	ret = init_chdir(mntpoint);
+	if (ret) {
+		pr_err("initrd: chdir to layer %d failed: %d\n", layer, ret);
+		goto restore;
+	}
+	ret = init_chroot(".");
+	if (ret) {
+		pr_err("initrd: chroot into layer %d failed: %d\n", layer, ret);
+		goto restore;
+	}
+
+	err = unpack_to_rootfs(buf, len, consumed);
+	if (err) {
+		pr_err("initrd: cpio layer %d: %s\n", layer, err);
+		ret = -EINVAL;
+	}
+
+	if (!*consumed)
+		ret = -ENODATA;
+
+restore:
+	set_fs_root(current->fs, &saved_root);
+	set_fs_pwd(current->fs, &saved_pwd);
+	path_put(&saved_root);
+	path_put(&saved_pwd);
+
+	if (ret)
+		goto out_umount;
+
+	init_flush_fput();
+	ret = init_mount(mntpoint, mntpoint, NULL, MS_REMOUNT | MS_RDONLY,
+			 NULL);
+	if (ret) {
+		pr_warn("initrd: read-only remount of layer %d failed: %d\n",
+			layer, ret);
+		goto out_umount;
+	}
+
+	return 0;
+
+out_umount:
+	init_umount(mntpoint, 0);
+	init_rmdir(mntpoint);
+	return ret;
+}
+
+/*
+ * Per-layer: "/initrd_layers/" + up to MAX_INITRD_LAYER_DIGITS + ':'
+ * Fixed:     the "upperdir=…,workdir=…,lowerdir=" prefix + '\0'
+ */
+#define OVLOPT_PER_LAYER                                           \
+	(sizeof("/initrd_layers/") - 1 + MAX_INITRD_LAYER_DIGITS + \
+	 sizeof(":") - 1)
+#define OVLOPT_FIXED                                \
+	(sizeof("upperdir=/initrd_layers/rw/upper," \
+		"workdir=/initrd_layers/rw/work,"   \
+		"lowerdir="))
+
+/*
+ * Assemble an overlayfs from the stacked initrd layers with a tmpfs
+ * upper layer for writability, mount the result at /root, and pivot
+ * the process root into it so subsequent path lookups see the overlay.
+ */
+static int __init erofs_initrd_assemble_overlay(int nlayers)
+{
+	char *opts;
+	int i, pos, ret;
+
+	if (nlayers <= 0)
+		return -ENODEV;
+
+	init_mkdir("/initrd_layers/rw", 0755);
+	ret = init_mount("tmpfs", "/initrd_layers/rw", "tmpfs", 0, NULL);
+	if (ret)
+		return ret;
+	init_mkdir("/initrd_layers/rw/upper", 0755);
+	init_mkdir("/initrd_layers/rw/work", 0755);
+
+	opts = kmalloc(nlayers * OVLOPT_PER_LAYER + OVLOPT_FIXED, GFP_KERNEL);
+	if (!opts)
+		return -ENOMEM;
+
+	pos = sprintf(opts, "upperdir=/initrd_layers/rw/upper,"
+			    "workdir=/initrd_layers/rw/work,"
+			    "lowerdir=");
+
+	for (i = nlayers - 1; i >= 0; i--) {
+		if (i < nlayers - 1)
+			opts[pos++] = ':';
+		pos += sprintf(opts + pos, "/initrd_layers/%d", i);
+	}
+
+	init_mkdir("/root", 0700);
+	ret = init_mount("overlay", "/root", "overlay", 0, opts);
+	kfree(opts);
+	if (ret) {
+		pr_err("initrd: overlayfs mount failed: %d\n", ret);
+		return ret;
+	}
+
+	pr_info("initrd: mounted %d layer(s) via overlayfs\n", nlayers);
+
+	/*
+	 * Switch the process root into the overlay so that subsequent
+	 * path lookups (e.g. init_eaccess for rdinit=) resolve against
+	 * the assembled initrd contents, not the empty rootfs.
+	 */
+	init_chdir("/root");
+	init_chroot(".");
+
+	if (IS_ENABLED(CONFIG_DEVTMPFS)) {
+		ret = init_mount("devtmpfs", "/dev", "devtmpfs", MS_SILENT,
+				 NULL);
+		if (ret)
+			pr_warn("initrd: devtmpfs mount on /dev failed: %d\n",
+				ret);
+	}
+
+	return 0;
+}
+
+static void __init erofs_initrd_cleanup(int nlayers)
+{
+	char mntpoint[INITRD_LAYER_MNT_MAX];
+	int i;
+
+	for (i = nlayers - 1; i >= 0; i--) {
+		snprintf(mntpoint, sizeof(mntpoint), "/initrd_layers/%d", i);
+		init_umount(mntpoint, 0);
+		init_rmdir(mntpoint);
+	}
+	init_rmdir("/initrd_layers");
 }
 
 static int __init erofs_initrd_setup(void)
 {
-	/* TODO: scan segments, mount EROFS layers, assemble overlayfs */
-	return -ENODEV;
-}
-#endif
+	char *buf = (char *)initrd_start;
+	unsigned long len = initrd_end - initrd_start;
+	unsigned long offset = 0;
+	int layer = 0;
+	bool has_erofs = false;
+	int ret;
 
-static void __init do_populate_rootfs(void *unused, async_cookie_t cookie)
-{
-	/* Load the built in initramfs */
-	char *err = unpack_to_rootfs(__initramfs_start, __initramfs_size);
-	if (err)
-		panic_show_mem("%s", err); /* Failed to decompress INTERNAL initramfs */
+	BUILD_BUG_ON(INITRD_BLKDEV_MAX > MAX_INITRD_LAYERS);
 
-	if (!initrd_start || IS_ENABLED(CONFIG_INITRAMFS_FORCE))
-		goto done;
+	init_mkdir("/initrd_layers", 0755);
 
-#ifdef CONFIG_INITRD_EROFS
-	if (initrd_has_erofs((void *)initrd_start, initrd_end - initrd_start)) {
-		if (!erofs_initrd_setup())
-			goto done;
-		pr_err("initrd: EROFS setup failed, falling back to cpio\n");
+	while (offset < len) {
+		unsigned long erofs_size, consumed, back;
+
+		if (layer >= MAX_INITRD_LAYERS) {
+			pr_err("initrd: too many layers (max %d)\n",
+			       MAX_INITRD_LAYERS);
+			break;
+		}
+
+		erofs_size = try_parse_erofs(buf, offset, len);
+		if (erofs_size) {
+			ret = mount_erofs_layer(layer, buf + offset,
+						erofs_size);
+			if (ret)
+				goto fail;
+			offset += erofs_size;
+			layer++;
+			has_erofs = true;
+			continue;
+		}
+
+		consumed = 0;
+		ret = mount_cpio_layer(layer, buf + offset, len - offset,
+				       &consumed);
+		if (!consumed)
+			break;
+		if (ret)
+			goto fail;
+		offset += consumed;
+		layer++;
+
+		/*
+		 * cpio NUL-skipping may have consumed bytes belonging to a
+		 * subsequent EROFS image's reserved area (first 1024 bytes,
+		 * typically all NULs).  Scan backward to find the true start.
+		 */
+		for (back = 1; back <= EROFS_SUPER_OFFSET && back <= consumed;
+		     back++) {
+			if (!IS_ALIGNED(offset - back,
+					1 << EROFS_BLKSZBITS_MIN))
+				continue;
+			if (try_parse_erofs(buf, offset - back, len)) {
+				offset -= back;
+				break;
+			}
+		}
 	}
-#endif
 
-	if (IS_ENABLED(CONFIG_BLK_DEV_RAM))
-		printk(KERN_INFO "Trying to unpack rootfs image as initramfs...\n");
-	else
-		printk(KERN_INFO "Unpacking initramfs...\n");
+	/* Alignment padding is often NUL-filled; do not treat that as junk. */
+	while (offset < len && !buf[offset])
+		offset++;
 
-	err = unpack_to_rootfs((char *)initrd_start, initrd_end - initrd_start);
-	if (err) {
-#ifdef CONFIG_BLK_DEV_RAM
-		populate_initrd_image(err);
-#else
-		printk(KERN_EMERG "Initramfs unpacking failed: %s\n", err);
-#endif
+	if (offset < len) {
+		pr_err("initrd: %lu trailing byte(s) after last layer (offset %lu, len %lu)\n",
+		       len - offset, offset, len);
+		ret = -EINVAL;
+		goto fail;
 	}
 
-done:
-	security_initramfs_populated();
+	if (!layer)
+		return -ENODEV;
 
 	/*
-	 * If the initrd region is overlapped with crashkernel reserved region,
-	 * free only memory that is not part of crashkernel region.
+	 * No EROFS detected: discard the temporary layers and fall back
+	 * to the standard unpack_to_rootfs() path.  That path extracts
+	 * into the existing rootfs, preserving any content from the
+	 * built-in initramfs (CONFIG_INITRAMFS_SOURCE).
 	 */
+	if (!has_erofs) {
+		erofs_initrd_cleanup(layer);
+		return -ENODEV;
+	}
+
+	/*
+	 * EROFS block devices reference the initrd memory directly.
+	 * Register the pages for deferred freeing when the last
+	 * device is released, and prevent the caller from freeing
+	 * the region immediately.
+	 */
+	initrd_blkdev_add_pages(ALIGN_DOWN(initrd_start, PAGE_SIZE),
+				ALIGN(initrd_end, PAGE_SIZE));
+
+	ret = erofs_initrd_assemble_overlay(layer);
+	if (ret)
+		goto fail;
+
+	/*
+	 * Zeroing here (after successful assembly) prevents the caller
+	 * from double-freeing the initrd pages; the pages are now owned
+	 * by the block devices and freed via free_disk.
+	 */
+	initrd_start = initrd_end = 0;
+
+	/*
+	 * The overlay holds references to the EROFS mounts, which in turn
+	 * pin the gendisks.  Remove the disks from the namespace and drop
+	 * our creation reference now; the gendisks stay alive until
+	 * switch_root unmounts the overlay and free_disk frees the pages.
+	 */
+	initrd_blkdev_shutdown();
+	return 0;
+
+fail:
+	erofs_initrd_cleanup(layer);
+	initrd_blkdev_shutdown();
+	return ret;
+}
+
+#endif
+
+/*
+ * Release or preserve the initrd memory region depending on retain_initrd,
+ * then zero the global pointers so no later path double-frees.
+ */
+static void __init finalize_initrd(void)
+{
 	if (!do_retain_initrd && initrd_start && !kexec_free_initrd()) {
 		free_initrd_mem(initrd_start, initrd_end);
 	} else if (do_retain_initrd && initrd_start) {
@@ -843,7 +1132,58 @@ done:
 	}
 	initrd_start = 0;
 	initrd_end = 0;
+}
 
+static void __init do_populate_rootfs(void *unused, async_cookie_t cookie)
+{
+	/* Load the built in initramfs */
+	char *err = unpack_to_rootfs(__initramfs_start, __initramfs_size, NULL);
+	if (err)
+		panic_show_mem("%s", err); /* Failed to decompress INTERNAL initramfs */
+
+	if (!initrd_start || IS_ENABLED(CONFIG_INITRAMFS_FORCE))
+		goto done;
+
+#ifdef CONFIG_INITRD_EROFS
+	/*
+	 * EROFS and overlayfs register at device_initcall (level 6), which
+	 * runs AFTER rootfs_initcall.  Since we are executing asynchronously
+	 * from rootfs_initcall, those filesystem types are not yet available.
+	 *
+	 * Always defer when CONFIG_INITRD_EROFS is enabled: the initrd may
+	 * contain EROFS images at any position (e.g. after a cpio segment).
+	 * erofs_initrd_setup() will iterate all segments and fall back to
+	 * the standard unpack path if no EROFS is found.
+	 */
+	erofs_initrd_deferred = true;
+	goto done;
+#endif
+
+	if (IS_ENABLED(CONFIG_BLK_DEV_RAM))
+		printk(KERN_INFO "Trying to unpack rootfs image as initramfs...\n");
+	else
+		printk(KERN_INFO "Unpacking initramfs...\n");
+
+	err = unpack_to_rootfs((char *)initrd_start, initrd_end - initrd_start,
+			       NULL);
+	if (err) {
+#ifdef CONFIG_BLK_DEV_RAM
+		populate_initrd_image(err);
+#else
+		printk(KERN_EMERG "Initramfs unpacking failed: %s\n", err);
+#endif
+	}
+
+done:
+#ifdef CONFIG_INITRD_EROFS
+	if (erofs_initrd_deferred)
+		goto out_flush;
+#endif
+	security_initramfs_populated();
+
+	finalize_initrd();
+
+out_flush:
 	init_flush_fput();
 }
 
@@ -863,6 +1203,40 @@ void wait_for_initramfs(void)
 		return;
 	}
 	async_synchronize_cookie_domain(initramfs_cookie + 1, &initramfs_domain);
+
+#ifdef CONFIG_INITRD_EROFS
+	/*
+	 * The EROFS setup was deferred from do_populate_rootfs() because
+	 * filesystem types (erofs, overlay) register at device_initcall
+	 * level 6, after rootfs_initcall.  By the time we get here,
+	 * do_initcalls() has completed and all types are available.
+	 */
+	if (erofs_initrd_deferred) {
+		int ret;
+
+		erofs_initrd_deferred = false;
+		ret = erofs_initrd_setup();
+		if (ret == -ENODEV) {
+			/*
+			 * No EROFS found — pure cpio initrd.  Fall back to
+			 * the standard unpack_to_rootfs() path.
+			 */
+			char *err;
+
+			pr_info("Unpacking initramfs...\n");
+			err = unpack_to_rootfs((char *)initrd_start,
+					       initrd_end - initrd_start, NULL);
+			if (err)
+				pr_emerg("Initramfs unpacking failed: %s\n",
+					 err);
+		} else if (ret) {
+			pr_err("initrd: EROFS setup failed (%d)\n", ret);
+		}
+
+		finalize_initrd();
+		security_initramfs_populated();
+	}
+#endif
 }
 EXPORT_SYMBOL_GPL(wait_for_initramfs);
 
