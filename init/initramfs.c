@@ -801,6 +801,33 @@ static unsigned long __init try_parse_erofs(void *buf, unsigned long off,
 }
 
 /*
+ * Check whether an EROFS superblock indicates extended attribute
+ * metadata and warn once if the kernel lacks the config options
+ * needed to honour them through the overlay.
+ */
+static void __init erofs_initrd_check_xattrs(void *buf)
+{
+	struct erofs_super_block *sb = buf + EROFS_SUPER_OFFSET;
+	static bool warned;
+
+	if (warned)
+		return;
+	if (!le32_to_cpu(sb->xattr_blkaddr) && !sb->xattr_prefix_count)
+		return;
+
+	warned = true;
+
+	if (!IS_ENABLED(CONFIG_EROFS_FS_XATTR)) {
+		pr_warn("initrd: EROFS xattrs present but CONFIG_EROFS_FS_XATTR not set\n");
+		return;
+	}
+	if (!IS_ENABLED(CONFIG_EROFS_FS_SECURITY))
+		pr_warn("initrd: EROFS xattrs present but CONFIG_EROFS_FS_SECURITY not set; security labels ignored\n");
+	if (!IS_ENABLED(CONFIG_TMPFS_XATTR))
+		pr_warn("initrd: EROFS xattrs present but CONFIG_TMPFS_XATTR not set; copy-up will fail\n");
+}
+
+/*
  * Mount an EROFS image segment as a read-only layer backed by a
  * memory block device.
  */
@@ -1017,6 +1044,7 @@ static int __init erofs_initrd_setup(void)
 
 		erofs_size = try_parse_erofs(buf, offset, len);
 		if (erofs_size) {
+			erofs_initrd_check_xattrs(buf + offset);
 			ret = mount_erofs_layer(layer, buf + offset,
 						erofs_size);
 			if (ret)
