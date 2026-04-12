@@ -1109,23 +1109,26 @@ static int __init erofs_initrd_setup(void)
 
 	/*
 	 * EROFS block devices reference the initrd memory directly.
-	 * Register the pages for deferred freeing when the last
-	 * device is released, and prevent the caller from freeing
-	 * the region immediately.
+	 *
+	 * When retain_initrd is clear, register the pages for deferred
+	 * freeing when the last device is released, and zero the pointers
+	 * so the caller does not double-free.
+	 *
+	 * When retain_initrd (or the deprecated ARM "keepinitrd") is set,
+	 * skip registration: the caller will expose the raw initrd via
+	 * /sys/firmware/initrd and the memory stays valid for both sysfs
+	 * and the EROFS mounts.
 	 */
-	initrd_blkdev_add_pages(ALIGN_DOWN(initrd_start, PAGE_SIZE),
-				ALIGN(initrd_end, PAGE_SIZE));
+	if (!do_retain_initrd)
+		initrd_blkdev_add_pages(ALIGN_DOWN(initrd_start, PAGE_SIZE),
+					ALIGN(initrd_end, PAGE_SIZE));
 
 	ret = erofs_initrd_assemble_overlay(layer);
 	if (ret)
 		goto fail;
 
-	/*
-	 * Zeroing here (after successful assembly) prevents the caller
-	 * from double-freeing the initrd pages; the pages are now owned
-	 * by the block devices and freed via free_disk.
-	 */
-	initrd_start = initrd_end = 0;
+	if (!do_retain_initrd)
+		initrd_start = initrd_end = 0;
 
 	/*
 	 * The overlay holds references to the EROFS mounts, which in turn
