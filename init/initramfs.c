@@ -35,7 +35,9 @@ static __initdata bool csum_present;
 static __initdata u32 io_csum;
 
 #ifdef CONFIG_INITRD_EROFS
-static bool __initdata erofs_initrd_deferred;
+static bool erofs_initrd_deferred;
+static bool __initdata erofs_initrd_root_pivoted;
+void __init erofs_memback_set_pending(void *data, unsigned long size);
 #endif
 
 static ssize_t __init xwrite(struct file *file, const unsigned char *p,
@@ -741,11 +743,7 @@ static void __init populate_initrd_image(char *err)
 #ifdef CONFIG_INITRD_EROFS
 #define EROFS_SB_MINSIZE (EROFS_SUPER_OFFSET + sizeof(struct erofs_super_block))
 
-/*
- * Total number of initrd layers (cpio + EROFS combined).
- * EROFS layers are additionally bounded by INITRD_BLKDEV_MAX (currently 32,
- * defined in do_mounts.h), since each EROFS layer requires a block device.
- */
+/* Total number of initrd layers (cpio + EROFS combined). */
 #define MAX_INITRD_LAYERS 128
 #define MAX_INITRD_LAYER_DIGITS (sizeof(__stringify(MAX_INITRD_LAYERS)) - 1)
 
@@ -816,41 +814,29 @@ static void __init erofs_initrd_check_xattrs(void *buf)
 	warned = true;
 
 	if (!IS_ENABLED(CONFIG_EROFS_FS_XATTR)) {
-		pr_warn("initrd: EROFS xattrs present but CONFIG_EROFS_FS_XATTR not set\n");
+		pr_warn("initrd: EROFS image has extended attributes but CONFIG_EROFS_FS_XATTR is not set; xattrs will be ignored\n");
 		return;
 	}
 	if (!IS_ENABLED(CONFIG_EROFS_FS_SECURITY))
-		pr_warn("initrd: EROFS xattrs present but CONFIG_EROFS_FS_SECURITY not set; security labels ignored\n");
+		pr_warn("initrd: EROFS image has extended attributes but CONFIG_EROFS_FS_SECURITY is not set; security labels will be ignored\n");
 	if (!IS_ENABLED(CONFIG_TMPFS_XATTR))
-		pr_warn("initrd: EROFS xattrs present but CONFIG_TMPFS_XATTR not set; copy-up will fail\n");
+		pr_warn("initrd: EROFS image has extended attributes but CONFIG_TMPFS_XATTR is not set; copy-up of xattrs will fail\n");
 }
 
 /*
- * Mount an EROFS image segment as a read-only layer backed by a
- * memory block device.
+ * Mount an EROFS image segment directly from initrd memory, without
+ * going through the block layer.
  */
 static int __init mount_erofs_layer(int layer, void *buf, unsigned long size)
 {
-	char mntpoint[INITRD_LAYER_MNT_MAX], devpath[INITRD_LAYER_MNT_MAX];
-	char diskname[INITRD_LAYER_MNT_MAX];
-	dev_t dev;
+	char mntpoint[INITRD_LAYER_MNT_MAX];
 	int err;
 
 	snprintf(mntpoint, sizeof(mntpoint), "/initrd_layers/%d", layer);
-	snprintf(devpath, sizeof(devpath), "/dev/initrd%d", layer);
-	snprintf(diskname, sizeof(diskname), "initrd%d", layer);
-
 	init_mkdir(mntpoint, 0755);
 
-	dev = initrd_blkdev_create(buf, size, diskname);
-	if (!dev) {
-		pr_err("initrd: blkdev creation for layer %d failed\n", layer);
-		return -ENOMEM;
-	}
-
-	create_dev(devpath, dev);
-
-	err = init_mount(devpath, mntpoint, "erofs", MS_RDONLY, NULL);
+	erofs_memback_set_pending(buf, size);
+	err = init_mount("none", mntpoint, "erofs", MS_RDONLY, NULL);
 	if (err)
 		pr_err("initrd: EROFS mount for layer %d failed: %d\n", layer,
 		       err);
@@ -987,20 +973,16 @@ static int __init erofs_initrd_assemble_overlay(int nlayers)
 	pr_info("initrd: mounted %d layer(s) via overlayfs\n", nlayers);
 
 	/*
-	 * Switch the process root into the overlay so that subsequent
-	 * path lookups (e.g. init_eaccess for rdinit=) resolve against
-	 * the assembled initrd contents, not the empty rootfs.
+	 * Record that the overlay is ready at /root so
+	 * initramfs_pivot_root() can chdir/chroot PID 1 into it.
+	 * Do NOT pivot here — when the async worker finishes before
+	 * kernel_init_freeable() calls wait_for_initramfs(), this
+	 * function runs in PID 1's context and a premature pivot
+	 * would cause initramfs_pivot_root() to double-pivot into
+	 * the overlay's /root home directory instead of the overlay
+	 * root itself.
 	 */
-	init_chdir("/root");
-	init_chroot(".");
-
-	if (IS_ENABLED(CONFIG_DEVTMPFS)) {
-		ret = init_mount("devtmpfs", "/dev", "devtmpfs", MS_SILENT,
-				 NULL);
-		if (ret)
-			pr_warn("initrd: devtmpfs mount on /dev failed: %d\n",
-				ret);
-	}
+	erofs_initrd_root_pivoted = true;
 
 	return 0;
 }
@@ -1015,6 +997,8 @@ static void __init erofs_initrd_cleanup(int nlayers)
 		init_umount(mntpoint, 0);
 		init_rmdir(mntpoint);
 	}
+	init_umount("/initrd_layers/rw", 0);
+	init_rmdir("/initrd_layers/rw");
 	init_rmdir("/initrd_layers");
 }
 
@@ -1026,8 +1010,6 @@ static int __init erofs_initrd_setup(void)
 	int layer = 0;
 	bool has_erofs = false;
 	int ret;
-
-	BUILD_BUG_ON(INITRD_BLKDEV_MAX > MAX_INITRD_LAYERS);
 
 	init_mkdir("/initrd_layers", 0755);
 
@@ -1105,22 +1087,6 @@ static int __init erofs_initrd_setup(void)
 		return -ENODEV;
 	}
 
-	/*
-	 * EROFS block devices reference the initrd memory directly.
-	 *
-	 * When retain_initrd is clear, register the pages for deferred
-	 * freeing when the last device is released, and zero the pointers
-	 * so the caller does not double-free.
-	 *
-	 * When retain_initrd (or the deprecated ARM "keepinitrd") is set,
-	 * skip registration: the caller will expose the raw initrd via
-	 * /sys/firmware/initrd and the memory stays valid for both sysfs
-	 * and the EROFS mounts.
-	 */
-	if (!do_retain_initrd)
-		initrd_blkdev_add_pages(ALIGN_DOWN(initrd_start, PAGE_SIZE),
-					ALIGN(initrd_end, PAGE_SIZE));
-
 	ret = erofs_initrd_assemble_overlay(layer);
 	if (ret)
 		goto fail;
@@ -1128,40 +1094,14 @@ static int __init erofs_initrd_setup(void)
 	if (!do_retain_initrd)
 		initrd_start = initrd_end = 0;
 
-	/*
-	 * The overlay holds references to the EROFS mounts, which in turn
-	 * pin the gendisks.  Remove the disks from the namespace and drop
-	 * our creation reference now; the gendisks stay alive until
-	 * switch_root unmounts the overlay and free_disk frees the pages.
-	 */
-	initrd_blkdev_shutdown();
 	return 0;
 
 fail:
 	erofs_initrd_cleanup(layer);
-	initrd_blkdev_shutdown();
 	return ret;
 }
 
 #endif
-
-/*
- * Release or preserve the initrd memory region depending on retain_initrd,
- * then zero the global pointers so no later path double-frees.
- */
-static void __init finalize_initrd(void)
-{
-	if (!do_retain_initrd && initrd_start && !kexec_free_initrd()) {
-		free_initrd_mem(initrd_start, initrd_end);
-	} else if (do_retain_initrd && initrd_start) {
-		bin_attr_initrd.size = initrd_end - initrd_start;
-		bin_attr_initrd.private = (void *)initrd_start;
-		if (sysfs_create_bin_file(firmware_kobj, &bin_attr_initrd))
-			pr_err("Failed to create initrd sysfs file");
-	}
-	initrd_start = 0;
-	initrd_end = 0;
-}
 
 static void __init do_populate_rootfs(void *unused, async_cookie_t cookie)
 {
@@ -1210,7 +1150,20 @@ done:
 #endif
 	security_initramfs_populated();
 
-	finalize_initrd();
+	/*
+	 * If the initrd region is overlapped with crashkernel reserved region,
+	 * free only memory that is not part of crashkernel region.
+	 */
+	if (!do_retain_initrd && initrd_start && !kexec_free_initrd()) {
+		free_initrd_mem(initrd_start, initrd_end);
+	} else if (do_retain_initrd && initrd_start) {
+		bin_attr_initrd.size = initrd_end - initrd_start;
+		bin_attr_initrd.private = (void *)initrd_start;
+		if (sysfs_create_bin_file(firmware_kobj, &bin_attr_initrd))
+			pr_err("Failed to create initrd sysfs file");
+	}
+	initrd_start = 0;
+	initrd_end = 0;
 
 out_flush:
 	init_flush_fput();
@@ -1245,29 +1198,69 @@ void wait_for_initramfs(void)
 
 		erofs_initrd_deferred = false;
 		ret = erofs_initrd_setup();
-		if (ret == -ENODEV) {
+		if (ret) {
 			/*
-			 * No EROFS found — pure cpio initrd.  Fall back to
-			 * the standard unpack_to_rootfs() path.
+			 * No EROFS found, or EROFS setup failed.
+			 * Fall back to the standard unpack path.
 			 */
 			char *err;
 
+			if (ret != -ENODEV)
+				pr_err("initrd: EROFS setup failed (%d), trying cpio\n",
+				       ret);
 			pr_info("Unpacking initramfs...\n");
 			err = unpack_to_rootfs((char *)initrd_start,
-					       initrd_end - initrd_start, NULL);
+					       initrd_end - initrd_start,
+					       NULL);
 			if (err)
 				pr_emerg("Initramfs unpacking failed: %s\n",
 					 err);
-		} else if (ret) {
-			pr_err("initrd: EROFS setup failed (%d)\n", ret);
 		}
 
-		finalize_initrd();
+		if (!do_retain_initrd && initrd_start &&
+		    !kexec_free_initrd())
+			free_initrd_mem(initrd_start, initrd_end);
+		if (do_retain_initrd && initrd_start) {
+			bin_attr_initrd.size = initrd_end - initrd_start;
+			bin_attr_initrd.private = (void *)initrd_start;
+			if (sysfs_create_bin_file(firmware_kobj,
+						  &bin_attr_initrd))
+				pr_err("Failed to create initrd sysfs file");
+		}
+		initrd_start = 0;
+		initrd_end = 0;
 		security_initramfs_populated();
 	}
 #endif
 }
 EXPORT_SYMBOL_GPL(wait_for_initramfs);
+
+/*
+ * If the EROFS initrd overlay was assembled on a kworker thread
+ * (triggered by an early wait_for_initramfs() from a usermodehelper),
+ * PID 1 still has the old root.  Replay the pivot so PID 1 resolves
+ * paths (e.g. rdinit=) against the overlay.
+ */
+void __init initramfs_pivot_root(void)
+{
+#ifdef CONFIG_INITRD_EROFS
+	if (erofs_initrd_root_pivoted) {
+		erofs_initrd_root_pivoted = false;
+		init_chdir("/root");
+		init_chroot(".");
+
+		if (IS_ENABLED(CONFIG_DEVTMPFS)) {
+			int ret;
+
+			ret = init_mount("devtmpfs", "/dev", "devtmpfs",
+					 MS_SILENT, NULL);
+			if (ret)
+				pr_warn("initrd: devtmpfs mount on /dev failed: %d\n",
+					ret);
+		}
+	}
+#endif
+}
 
 static int __init populate_rootfs(void)
 {

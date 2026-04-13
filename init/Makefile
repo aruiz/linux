@@ -19,7 +19,6 @@ obj-y                          += init_task.o
 mounts-y			:= do_mounts.o
 mounts-$(CONFIG_BLK_DEV_RAM)	+= do_mounts_rd.o
 mounts-$(CONFIG_BLK_DEV_INITRD)	+= do_mounts_initrd.o
-obj-$(CONFIG_INITRD_EROFS)	+= initrd_blkdev.o
 
 #
 # UTS_VERSION

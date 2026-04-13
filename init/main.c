@@ -1660,6 +1660,7 @@ static noinline void __init kernel_init_freeable(void)
 	kunit_run_all_tests();
 
 	wait_for_initramfs();
+	initramfs_pivot_root();
 	console_on_rootfs();
 
 	/*

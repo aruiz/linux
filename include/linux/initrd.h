@@ -19,9 +19,11 @@ extern void free_initrd_mem(unsigned long, unsigned long);
 #ifdef CONFIG_BLK_DEV_INITRD
 extern void __init reserve_initrd_mem(void);
 extern void wait_for_initramfs(void);
+extern void __init initramfs_pivot_root(void);
 #else
 static inline void __init reserve_initrd_mem(void) {}
 static inline void wait_for_initramfs(void) {}
+static inline void __init initramfs_pivot_root(void) {}
 #endif
 
 extern phys_addr_t phys_initrd_start;
