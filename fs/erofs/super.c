@@ -777,11 +777,36 @@ static int erofs_fc_fill_super(struct super_block *sb, struct fs_context *fc)
 	return 0;
 }
 
+/*
+ * Pending memback parameters, consumed during erofs_fc_get_tree().
+ * Only used by single-threaded __init code, no synchronization needed.
+ */
+static void *erofs_memback_pending_data __initdata;
+static unsigned long erofs_memback_pending_size __initdata;
+
+void __init erofs_memback_set_pending(void *data, unsigned long size)
+{
+	erofs_memback_pending_data = data;
+	erofs_memback_pending_size = size;
+}
+
+static void erofs_memback_consume_pending(struct erofs_sb_info *sbi)
+{
+	sbi->memback_data = erofs_memback_pending_data;
+	sbi->memback_size = erofs_memback_pending_size;
+	erofs_memback_pending_data = NULL;
+	erofs_memback_pending_size = 0;
+}
+
 static int erofs_fc_get_tree(struct fs_context *fc)
 {
 	struct erofs_sb_info *sbi = fc->s_fs_info;
 	int ret;
 
+	if (erofs_memback_pending_data) {
+		erofs_memback_consume_pending(sbi);
+		return get_tree_nodev(fc, erofs_fc_fill_super);
+	}
 	if (erofs_is_memback_mode(sbi))
 		return get_tree_nodev(fc, erofs_fc_fill_super);
 
@@ -986,32 +1011,6 @@ struct file_system_type erofs_anon_fs_type = {
 	.kill_sb        = kill_anon_super,
 };
 #endif
-
-struct vfsmount *erofs_mount_memback(void *data, unsigned long size)
-{
-	struct fs_context *fc;
-	struct erofs_sb_info *sbi;
-	struct vfsmount *mnt;
-	int err;
-
-	fc = fs_context_for_mount(&erofs_fs_type, SB_RDONLY);
-	if (IS_ERR(fc))
-		return ERR_CAST(fc);
-
-	sbi = fc->s_fs_info;
-	sbi->memback_data = data;
-	sbi->memback_size = size;
-
-	err = vfs_get_tree(fc);
-	if (err) {
-		put_fs_context(fc);
-		return ERR_PTR(err);
-	}
-
-	mnt = vfs_create_mount(fc);
-	put_fs_context(fc);
-	return mnt;
-}
 
 static int __init erofs_module_init(void)
 {

@@ -563,7 +563,7 @@ static inline void erofs_fileio_submit_bio(struct bio *bio) {}
 struct bio *erofs_memback_bio_alloc(struct erofs_map_dev *mdev);
 void erofs_memback_submit_bio(struct bio *bio);
 
-struct vfsmount *erofs_mount_memback(void *data, unsigned long size);
+void __init erofs_memback_set_pending(void *data, unsigned long size);
 
 #ifdef CONFIG_EROFS_FS_ONDEMAND
 int erofs_fscache_register_fs(struct super_block *sb);
