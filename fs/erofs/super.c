@@ -625,7 +625,7 @@ static void erofs_set_sysfs_name(struct super_block *sb)
 					     sbi->fsid);
 	else if (sbi->fsid)
 		super_set_sysfs_name_generic(sb, "%s", sbi->fsid);
-	else if (erofs_is_fileio_mode(sbi))
+	else if (erofs_is_memback_mode(sbi) || erofs_is_fileio_mode(sbi))
 		super_set_sysfs_name_generic(sb, "%s",
 					     bdi_dev_name(sb->s_bdi));
 	else
@@ -654,20 +654,6 @@ static int erofs_fc_fill_super(struct super_block *sb, struct fs_context *fc)
 
 	sbi->blkszbits = PAGE_SHIFT;
 	if (!sb->s_bdev) {
-		/*
-		 * (File-backed mounts) EROFS claims it's safe to nest other
-		 * fs contexts (including its own) due to self-controlled RO
-		 * accesses/contexts and no side-effect changes that need to
-		 * context save & restore so it can reuse the current thread
-		 * context.
-		 * However, we still need to prevent kernel stack overflow due
-		 * to filesystem nesting: just ensure that s_stack_depth is 0
-		 * to disallow mounting EROFS on stacked filesystems.
-		 * Note: s_stack_depth is not incremented here for now, since
-		 * EROFS is the only fs supporting file-backed mounts for now.
-		 * It MUST change if another fs plans to support them, which
-		 * may also require adjusting FILESYSTEM_MAX_STACK_DEPTH.
-		 */
 		if (erofs_is_fileio_mode(sbi)) {
 			inode = file_inode(sbi->dif0.file);
 			if ((inode->i_sb->s_op == &erofs_sops &&
@@ -708,7 +694,7 @@ static int erofs_fc_fill_super(struct super_block *sb, struct fs_context *fc)
 			return -EINVAL;
 		}
 
-		if (erofs_is_fileio_mode(sbi)) {
+		if (erofs_is_memback_mode(sbi) || erofs_is_fileio_mode(sbi)) {
 			sb->s_blocksize = 1 << sbi->blkszbits;
 			sb->s_blocksize_bits = sbi->blkszbits;
 		} else if (!sb_set_blocksize(sb, 1 << sbi->blkszbits)) {
@@ -795,6 +781,9 @@ static int erofs_fc_get_tree(struct fs_context *fc)
 {
 	struct erofs_sb_info *sbi = fc->s_fs_info;
 	int ret;
+
+	if (erofs_is_memback_mode(sbi))
+		return get_tree_nodev(fc, erofs_fc_fill_super);
 
 	if (IS_ENABLED(CONFIG_EROFS_FS_ONDEMAND) && sbi->fsid)
 		return get_tree_nodev(fc, erofs_fc_fill_super);
@@ -928,7 +917,8 @@ static void erofs_kill_sb(struct super_block *sb)
 {
 	struct erofs_sb_info *sbi = EROFS_SB(sb);
 
-	if ((IS_ENABLED(CONFIG_EROFS_FS_ONDEMAND) && sbi->fsid) ||
+	if (erofs_is_memback_mode(sbi) ||
+	    (IS_ENABLED(CONFIG_EROFS_FS_ONDEMAND) && sbi->fsid) ||
 	    sbi->dif0.file)
 		kill_anon_super(sb);
 	else
@@ -996,6 +986,32 @@ struct file_system_type erofs_anon_fs_type = {
 	.kill_sb        = kill_anon_super,
 };
 #endif
+
+struct vfsmount *erofs_mount_memback(void *data, unsigned long size)
+{
+	struct fs_context *fc;
+	struct erofs_sb_info *sbi;
+	struct vfsmount *mnt;
+	int err;
+
+	fc = fs_context_for_mount(&erofs_fs_type, SB_RDONLY);
+	if (IS_ERR(fc))
+		return ERR_CAST(fc);
+
+	sbi = fc->s_fs_info;
+	sbi->memback_data = data;
+	sbi->memback_size = size;
+
+	err = vfs_get_tree(fc);
+	if (err) {
+		put_fs_context(fc);
+		return ERR_PTR(err);
+	}
+
+	mnt = vfs_create_mount(fc);
+	put_fs_context(fc);
+	return mnt;
+}
 
 static int __init erofs_module_init(void)
 {

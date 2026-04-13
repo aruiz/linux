@@ -104,6 +104,9 @@ struct erofs_xattr_prefix_item {
 struct erofs_sb_info {
 	struct erofs_device_info dif0;
 	struct erofs_mount_opts opt;	/* options */
+
+	void *memback_data;
+	unsigned long memback_size;
 #ifdef CONFIG_EROFS_FS_ZIP
 	/* list for all registered superblocks, mainly for shrinker */
 	struct list_head list;
@@ -182,6 +185,11 @@ struct erofs_sb_info {
 #define set_opt(opt, option)	((opt)->mount_opt |= EROFS_MOUNT_##option)
 #define test_opt(opt, option)	((opt)->mount_opt & EROFS_MOUNT_##option)
 
+static inline bool erofs_is_memback_mode(struct erofs_sb_info *sbi)
+{
+	return sbi->memback_data != NULL;
+}
+
 static inline bool erofs_is_fileio_mode(struct erofs_sb_info *sbi)
 {
 	return IS_ENABLED(CONFIG_EROFS_FS_BACKED_BY_FILE) && sbi->dif0.file;
@@ -192,6 +200,7 @@ extern struct file_system_type erofs_anon_fs_type;
 static inline bool erofs_is_fscache_mode(struct super_block *sb)
 {
 	return IS_ENABLED(CONFIG_EROFS_FS_ONDEMAND) &&
+			!erofs_is_memback_mode(EROFS_SB(sb)) &&
 			!erofs_is_fileio_mode(EROFS_SB(sb)) && !sb->s_bdev;
 }
 
@@ -205,8 +214,10 @@ struct erofs_buf {
 	struct address_space *mapping;
 	struct file *file;
 	u64 off;
+	unsigned long memback_size;
 	struct page *page;
 	void *base;
+	bool memback;
 };
 #define __EROFS_BUF_INITIALIZER	((struct erofs_buf){ .page = NULL })
 
@@ -414,6 +425,7 @@ extern const struct super_operations erofs_sops;
 
 extern const struct address_space_operations erofs_aops;
 extern const struct address_space_operations erofs_fileio_aops;
+extern const struct address_space_operations erofs_memback_aops;
 extern const struct address_space_operations z_erofs_aops;
 extern const struct address_space_operations erofs_fscache_access_aops;
 
@@ -481,6 +493,8 @@ erofs_get_aops(struct inode *realinode, bool no_fscache)
 			  "EXPERIMENTAL EROFS subpage compressed block support in use. Use at your own risk!");
 		return &z_erofs_aops;
 	}
+	if (erofs_is_memback_mode(EROFS_SB(realinode->i_sb)))
+		return &erofs_memback_aops;
 	if (IS_ENABLED(CONFIG_EROFS_FS_ONDEMAND) && !no_fscache &&
 	    erofs_is_fscache_mode(realinode->i_sb))
 		return &erofs_fscache_access_aops;
@@ -545,6 +559,11 @@ void erofs_fileio_submit_bio(struct bio *bio);
 static inline struct bio *erofs_fileio_bio_alloc(struct erofs_map_dev *mdev) { return NULL; }
 static inline void erofs_fileio_submit_bio(struct bio *bio) {}
 #endif
+
+struct bio *erofs_memback_bio_alloc(struct erofs_map_dev *mdev);
+void erofs_memback_submit_bio(struct bio *bio);
+
+struct vfsmount *erofs_mount_memback(void *data, unsigned long size);
 
 #ifdef CONFIG_EROFS_FS_ONDEMAND
 int erofs_fscache_register_fs(struct super_block *sb);
