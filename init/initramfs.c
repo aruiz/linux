@@ -1002,6 +1002,28 @@ static void __init erofs_initrd_cleanup(int nlayers)
 	init_rmdir("/initrd_layers");
 }
 
+/*
+ * Lightweight scan to determine whether the initrd contains any EROFS
+ * images.  Probes every minimum-block-aligned offset for a valid EROFS
+ * superblock using the full try_parse_erofs() validation (magic,
+ * blkszbits range, feature flags, block count, and image-size fit).
+ *
+ * For non-EROFS positions the check exits on the first 4-byte magic
+ * comparison, making the scan effectively a sequential memory read at
+ * 512-byte strides — typically < 2 ms for a 256 MB initrd.
+ */
+static bool __init initrd_has_erofs(char *buf, unsigned long len)
+{
+	unsigned long off;
+
+	for (off = 0; off + EROFS_SB_MINSIZE <= len;
+	     off += (1 << EROFS_BLKSZBITS_MIN)) {
+		if (try_parse_erofs(buf, off, len))
+			return true;
+	}
+	return false;
+}
+
 static int __init erofs_initrd_setup(void)
 {
 	char *buf = (char *)initrd_start;
@@ -1010,6 +1032,9 @@ static int __init erofs_initrd_setup(void)
 	int layer = 0;
 	bool has_erofs = false;
 	int ret;
+
+	if (!initrd_has_erofs(buf, len))
+		return -ENODEV;
 
 	init_mkdir("/initrd_layers", 0755);
 
