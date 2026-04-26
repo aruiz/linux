@@ -140,6 +140,29 @@
 #define SSD133X_SET_PRECHARGE_VOLTAGE		0xbb
 #define SSD133X_SET_VCOMH_VOLTAGE		0xbe
 
+/* ssd135x commands */
+#define SSD135X_SET_COL_RANGE 0x15
+#define SSD135X_SET_ROW_RANGE 0x75
+#define SSD135X_WRITE_RAM 0x5c
+#define SSD135X_SET_REMAP 0xa0
+#define SSD135X_SET_DISPLAY_START 0xa1
+#define SSD135X_SET_DISPLAY_OFFSET 0xa2
+#define SSD135X_SET_DISPLAY_NORMAL 0xa6
+#define SSD135X_FUNCTION_SELECT 0xab
+#define SSD135X_SET_PHASE_LENGTH 0xb1
+#define SSD135X_DISPLAY_ENHANCEMENT 0xb2
+#define SSD135X_SET_CLOCK_FREQ 0xb3
+#define SSD135X_SET_VSL 0xb4
+#define SSD135X_SET_GPIO 0xb5
+#define SSD135X_SET_PRECHARGE2 0xb6
+#define SSD135X_USE_BUILTIN_LUT 0xb9
+#define SSD135X_SET_PRECHARGE_VOLTAGE 0xbb
+#define SSD135X_SET_VCOMH 0xbe
+#define SSD135X_SET_CONTRAST_ABC 0xc1
+#define SSD135X_MASTER_CONTRAST 0xc7
+#define SSD135X_SET_MUX_RATIO 0xca
+#define SSD135X_SET_COMMAND_LOCK 0xfd
+
 #define MAX_CONTRAST 255
 
 const struct ssd130x_deviceinfo ssd130x_variants[] = {
@@ -207,6 +230,12 @@ const struct ssd130x_deviceinfo ssd130x_variants[] = {
 		.default_width = 96,
 		.default_height = 64,
 		.family_id = SSD133X_FAMILY,
+	},
+	/* ssd135x family */
+	[SSD1351_ID] = {
+		.default_width = 128,
+		.default_height = 128,
+		.family_id = SSD135X_FAMILY,
 	}
 };
 EXPORT_SYMBOL_NS_GPL(ssd130x_variants, "DRM_SSD130X");
@@ -681,6 +710,61 @@ static int ssd133x_init(struct ssd130x_device *ssd130x)
 	return ssd130x_run_cmd_seq(ssd130x, ssd133x_init_post);
 }
 
+static int ssd135x_init(struct ssd130x_device *ssd130x)
+{
+	int ret;
+
+	/* clang-format off */
+	static const u8 ssd135x_init_seq[] = {
+		SSD130X_CMD(SSD135X_SET_COMMAND_LOCK, 0x12),
+		SSD130X_CMD(SSD135X_SET_COMMAND_LOCK, 0xb1),
+		SSD130X_CMD(SSD13XX_DISPLAY_OFF),
+		SSD130X_CMD(SSD135X_SET_CLOCK_FREQ, 0xf1),
+		SSD130X_CMD(SSD135X_SET_DISPLAY_OFFSET, 0x00),
+		SSD130X_CMD(SSD135X_SET_DISPLAY_START, 0x00),
+		/*
+		 * Remap: horizontal addr increment, column remap,
+		 * color sequence C-B-A swapped, COM split odd/even,
+		 * 65k color depth.
+		 */
+		SSD130X_CMD(SSD135X_SET_REMAP, 0x74),
+		SSD130X_CMD(SSD135X_SET_GPIO, 0x00),
+		SSD130X_CMD(SSD135X_FUNCTION_SELECT, 0x01),
+		SSD130X_CMD(SSD135X_SET_PHASE_LENGTH, 0x32),
+		SSD130X_CMD(SSD135X_DISPLAY_ENHANCEMENT, 0xa4, 0x00, 0x00),
+		SSD130X_CMD(SSD135X_SET_CONTRAST_ABC, 0xc8, 0x80, 0xc8),
+		SSD130X_CMD(SSD135X_MASTER_CONTRAST, 0x0f),
+		SSD130X_CMD(SSD135X_SET_VSL, 0xa0, 0xb5, 0x55),
+		SSD130X_CMD(SSD135X_SET_PRECHARGE2, 0x01),
+		SSD130X_CMD(SSD135X_USE_BUILTIN_LUT),
+		SSD130X_CMD(SSD135X_SET_PRECHARGE_VOLTAGE, 0x17),
+		SSD130X_CMD(SSD135X_SET_VCOMH, 0x05),
+		SSD130X_CMD(SSD135X_SET_DISPLAY_NORMAL),
+		0
+	};
+	/* clang-format on */
+
+	ret = ssd130x_run_cmd_seq(ssd130x, ssd135x_init_seq);
+	if (ret)
+		return ret;
+
+	/* MUX ratio and column/row ranges depend on display dimensions */
+	{
+		/* clang-format off */
+		u8 dyn[] = {
+			SSD130X_CMD(SSD135X_SET_MUX_RATIO, ssd130x->height - 1),
+			SSD130X_CMD(SSD135X_SET_COL_RANGE, 0x00,
+				    ssd130x->width - 1),
+			SSD130X_CMD(SSD135X_SET_ROW_RANGE, 0x00,
+				    ssd130x->height - 1),
+			0
+		};
+		/* clang-format on */
+
+		return ssd130x_run_cmd_seq(ssd130x, dyn);
+	}
+}
+
 static int ssd130x_update_rect(struct ssd130x_device *ssd130x,
 			       struct drm_rect *rect, u8 *buf,
 			       u8 *data_array)
@@ -894,6 +978,37 @@ static int ssd133x_update_rect(struct ssd130x_device *ssd130x,
 	return ret;
 }
 
+static int ssd135x_update_rect(struct ssd130x_device *ssd130x,
+			       struct drm_rect *rect, u8 *data_array,
+			       unsigned int pitch)
+{
+	unsigned int x = rect->x1;
+	unsigned int y = rect->y1;
+	unsigned int columns = drm_rect_width(rect);
+	unsigned int rows = drm_rect_height(rect);
+	int ret;
+
+	/* Set column and row ranges, then enable RAM write */
+	{
+		/* clang-format off */
+		u8 range_cmds[] = {
+			SSD130X_CMD(SSD135X_SET_COL_RANGE, x, x + columns - 1),
+			SSD130X_CMD(SSD135X_SET_ROW_RANGE, y, y + rows - 1),
+			SSD130X_CMD(SSD135X_WRITE_RAM),
+			0
+		};
+		/* clang-format on */
+
+		ret = ssd130x_run_cmd_seq(ssd130x, range_cmds);
+		if (ret < 0)
+			return ret;
+	}
+
+	ret = ssd130x_write_data(ssd130x, data_array, pitch * rows);
+
+	return ret;
+}
+
 static void ssd130x_clear_screen(struct ssd130x_device *ssd130x, u8 *data_array)
 {
 	unsigned int pages = DIV_ROUND_UP(ssd130x->height, SSD130X_PAGE_HEIGHT);
@@ -959,6 +1074,28 @@ static void ssd133x_clear_screen(struct ssd130x_device *ssd130x, u8 *data_array)
 	memset(data_array, 0, pitch * ssd130x->height);
 
 	/* Write out update in one go since horizontal addressing mode is used */
+	ssd130x_write_data(ssd130x, data_array, pitch * ssd130x->height);
+}
+
+static void ssd135x_clear_screen(struct ssd130x_device *ssd130x, u8 *data_array)
+{
+	const struct drm_format_info *fi = drm_format_info(DRM_FORMAT_RGB565);
+	unsigned int pitch;
+
+	if (!fi)
+		return;
+
+	pitch = drm_format_info_min_pitch(fi, 0, ssd130x->width);
+
+	memset(data_array, 0, pitch * ssd130x->height);
+
+	{
+		u8 cmd[] = { SSD135X_WRITE_RAM };
+
+		if (ssd130x_write_cmd(ssd130x, cmd, sizeof(cmd)))
+			return;
+	}
+
 	ssd130x_write_data(ssd130x, data_array, pitch * ssd130x->height);
 }
 
@@ -1033,6 +1170,31 @@ static int ssd133x_fb_blit_rect(struct drm_framebuffer *fb,
 	drm_fb_xrgb8888_to_rgb332(&dst, &dst_pitch, vmap, fb, rect, fmtcnv_state);
 
 	ssd133x_update_rect(ssd130x, rect, data_array, dst_pitch);
+
+	return ret;
+}
+
+static int ssd135x_fb_blit_rect(struct drm_framebuffer *fb,
+				const struct iosys_map *vmap,
+				struct drm_rect *rect, u8 *data_array,
+				struct drm_format_conv_state *fmtcnv_state)
+{
+	struct ssd130x_device *ssd130x = drm_to_ssd130x(fb->dev);
+	const struct drm_format_info *fi = drm_format_info(DRM_FORMAT_RGB565);
+	unsigned int dst_pitch;
+	struct iosys_map dst;
+	int ret = 0;
+
+	if (!fi)
+		return -EINVAL;
+
+	dst_pitch = drm_format_info_min_pitch(fi, 0, drm_rect_width(rect));
+
+	iosys_map_set_vaddr(&dst, data_array);
+	drm_fb_xrgb8888_to_rgb565be(&dst, &dst_pitch, vmap, fb, rect,
+				    fmtcnv_state);
+
+	ssd135x_update_rect(ssd130x, rect, data_array, dst_pitch);
 
 	return ret;
 }
@@ -1150,6 +1312,30 @@ static int ssd133x_primary_plane_atomic_check(struct drm_plane *plane,
 						  DRM_PLANE_NO_SCALING,
 						  DRM_PLANE_NO_SCALING,
 						  false, false);
+	if (ret)
+		return ret;
+	else if (!plane_state->visible)
+		return 0;
+
+	return 0;
+}
+
+static int ssd135x_primary_plane_atomic_check(struct drm_plane *plane,
+					      struct drm_atomic_state *state)
+{
+	struct drm_plane_state *plane_state =
+		drm_atomic_get_new_plane_state(state, plane);
+	struct drm_crtc *crtc = plane_state->crtc;
+	struct drm_crtc_state *crtc_state = NULL;
+	int ret;
+
+	if (crtc)
+		crtc_state = drm_atomic_get_new_crtc_state(state, crtc);
+
+	ret = drm_atomic_helper_check_plane_state(plane_state, crtc_state,
+						  DRM_PLANE_NO_SCALING,
+						  DRM_PLANE_NO_SCALING, false,
+						  false);
 	if (ret)
 		return ret;
 	else if (!plane_state->visible)
@@ -1351,6 +1537,75 @@ static void ssd133x_primary_plane_atomic_disable(struct drm_plane *plane,
 	drm_dev_exit(idx);
 }
 
+static void ssd135x_primary_plane_atomic_update(struct drm_plane *plane,
+						struct drm_atomic_state *state)
+{
+	struct drm_plane_state *plane_state =
+		drm_atomic_get_new_plane_state(state, plane);
+	struct drm_plane_state *old_plane_state =
+		drm_atomic_get_old_plane_state(state, plane);
+	struct drm_shadow_plane_state *shadow_plane_state =
+		to_drm_shadow_plane_state(plane_state);
+	struct drm_crtc_state *crtc_state =
+		drm_atomic_get_new_crtc_state(state, plane_state->crtc);
+	struct ssd130x_crtc_state *ssd130x_crtc_state =
+		to_ssd130x_crtc_state(crtc_state);
+	struct drm_framebuffer *fb = plane_state->fb;
+	struct drm_atomic_helper_damage_iter iter;
+	struct drm_device *drm = plane->dev;
+	struct drm_rect dst_clip;
+	struct drm_rect damage;
+	int idx;
+
+	if (!drm_dev_enter(drm, &idx))
+		return;
+
+	if (drm_gem_fb_begin_cpu_access(fb, DMA_FROM_DEVICE))
+		goto out_drm_dev_exit;
+
+	drm_atomic_helper_damage_iter_init(&iter, old_plane_state, plane_state);
+	drm_atomic_for_each_plane_damage(&iter, &damage) {
+		dst_clip = plane_state->dst;
+
+		if (!drm_rect_intersect(&dst_clip, &damage))
+			continue;
+
+		ssd135x_fb_blit_rect(fb, &shadow_plane_state->data[0],
+				     &dst_clip, ssd130x_crtc_state->data_array,
+				     &shadow_plane_state->fmtcnv_state);
+	}
+
+	drm_gem_fb_end_cpu_access(fb, DMA_FROM_DEVICE);
+
+out_drm_dev_exit:
+	drm_dev_exit(idx);
+}
+
+static void ssd135x_primary_plane_atomic_disable(struct drm_plane *plane,
+						 struct drm_atomic_state *state)
+{
+	struct drm_device *drm = plane->dev;
+	struct ssd130x_device *ssd130x = drm_to_ssd130x(drm);
+	struct drm_plane_state *plane_state =
+		drm_atomic_get_new_plane_state(state, plane);
+	struct drm_crtc_state *crtc_state;
+	struct ssd130x_crtc_state *ssd130x_crtc_state;
+	int idx;
+
+	if (!plane_state->crtc)
+		return;
+
+	crtc_state = drm_atomic_get_new_crtc_state(state, plane_state->crtc);
+	ssd130x_crtc_state = to_ssd130x_crtc_state(crtc_state);
+
+	if (!drm_dev_enter(drm, &idx))
+		return;
+
+	ssd135x_clear_screen(ssd130x, ssd130x_crtc_state->data_array);
+
+	drm_dev_exit(idx);
+}
+
 /* Called during init to allocate the plane's atomic state. */
 static void ssd130x_primary_plane_reset(struct drm_plane *plane)
 {
@@ -1419,6 +1674,12 @@ static const struct drm_plane_helper_funcs ssd130x_primary_plane_helper_funcs[] 
 		.atomic_check = ssd133x_primary_plane_atomic_check,
 		.atomic_update = ssd133x_primary_plane_atomic_update,
 		.atomic_disable = ssd133x_primary_plane_atomic_disable,
+	},
+	[SSD135X_FAMILY] = {
+		DRM_GEM_SHADOW_PLANE_HELPER_FUNCS,
+		.atomic_check = ssd135x_primary_plane_atomic_check,
+		.atomic_update = ssd135x_primary_plane_atomic_update,
+		.atomic_disable = ssd135x_primary_plane_atomic_disable,
 	}
 };
 
@@ -1508,6 +1769,36 @@ static int ssd133x_crtc_atomic_check(struct drm_crtc *crtc,
 	return 0;
 }
 
+static int ssd135x_crtc_atomic_check(struct drm_crtc *crtc,
+				     struct drm_atomic_state *state)
+{
+	struct drm_device *drm = crtc->dev;
+	struct ssd130x_device *ssd130x = drm_to_ssd130x(drm);
+	struct drm_crtc_state *crtc_state =
+		drm_atomic_get_new_crtc_state(state, crtc);
+	struct ssd130x_crtc_state *ssd130x_state =
+		to_ssd130x_crtc_state(crtc_state);
+	const struct drm_format_info *fi = drm_format_info(DRM_FORMAT_RGB565);
+	unsigned int pitch;
+	int ret;
+
+	if (!fi)
+		return -EINVAL;
+
+	ret = drm_crtc_helper_atomic_check(crtc, state);
+	if (ret)
+		return ret;
+
+	pitch = drm_format_info_min_pitch(fi, 0, ssd130x->width);
+
+	ssd130x_state->data_array =
+		kmalloc_array(pitch, ssd130x->height, GFP_KERNEL);
+	if (!ssd130x_state->data_array)
+		return -ENOMEM;
+
+	return 0;
+}
+
 /* Called during init to allocate the CRTC's atomic state. */
 static void ssd130x_crtc_reset(struct drm_crtc *crtc)
 {
@@ -1572,6 +1863,10 @@ static const struct drm_crtc_helper_funcs ssd130x_crtc_helper_funcs[] = {
 	[SSD133X_FAMILY] = {
 		.mode_valid = ssd130x_crtc_mode_valid,
 		.atomic_check = ssd133x_crtc_atomic_check,
+	},
+	[SSD135X_FAMILY] = {
+		.mode_valid = ssd130x_crtc_mode_valid,
+		.atomic_check = ssd135x_crtc_atomic_check,
 	},
 };
 
@@ -1660,6 +1955,31 @@ power_off:
 	ssd130x_power_off(ssd130x);
 }
 
+static void ssd135x_encoder_atomic_enable(struct drm_encoder *encoder,
+					  struct drm_atomic_state *state)
+{
+	struct drm_device *drm = encoder->dev;
+	struct ssd130x_device *ssd130x = drm_to_ssd130x(drm);
+	int ret;
+
+	ret = ssd130x_power_on(ssd130x);
+	if (ret)
+		return;
+
+	ret = ssd135x_init(ssd130x);
+	if (ret)
+		goto power_off;
+
+	ssd130x_write_cmd(ssd130x, (u8[]){ SSD13XX_DISPLAY_ON }, 1);
+
+	backlight_enable(ssd130x->bl_dev);
+
+	return;
+
+power_off:
+	ssd130x_power_off(ssd130x);
+}
+
 static void ssd130x_encoder_atomic_disable(struct drm_encoder *encoder,
 					   struct drm_atomic_state *state)
 {
@@ -1684,6 +2004,10 @@ static const struct drm_encoder_helper_funcs ssd130x_encoder_helper_funcs[] = {
 	},
 	[SSD133X_FAMILY] = {
 		.atomic_enable = ssd133x_encoder_atomic_enable,
+		.atomic_disable = ssd130x_encoder_atomic_disable,
+	},
+	[SSD135X_FAMILY] = {
+		.atomic_enable = ssd135x_encoder_atomic_enable,
 		.atomic_disable = ssd130x_encoder_atomic_disable,
 	}
 };
