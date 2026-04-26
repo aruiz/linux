@@ -299,11 +299,17 @@ static int ssd130x_write_cmds(struct ssd130x_device *ssd130x, const u8 *cmd,
 }
 
 /*
+ * Emit a length-prefixed command entry inside a packed sequence initializer.
+ * The length is computed automatically from the number of arguments.
+ */
+#define SSD130X_CMD(...) sizeof((u8[]){ __VA_ARGS__ }), __VA_ARGS__
+
+/*
  * Run a packed command sequence.  The format is a flat byte array where each
  * entry starts with a length byte followed by that many command bytes.  A
  * zero length byte terminates the sequence.
  *
- * Example: { 2, 0x81, 0x80, 1, 0xAF, 0 }
+ * Example: { SSD130X_CMD(0x81, 0x80), SSD130X_CMD(0xAF), 0 }
  *   sends command {0x81, 0x80}, then command {0xAF}, then stops.
  */
 static int ssd130x_run_cmd_seq(struct ssd130x_device *ssd130x, const u8 *seq)
@@ -462,12 +468,12 @@ static int ssd130x_init(struct ssd130x_device *ssd130x)
 
 	/* clang-format off */
 	u8 init_seq1[] = {
-		2, SSD13XX_CONTRAST, ssd130x->contrast,
-		1, seg_remap,
-		1, com_invdir,
-		2, SSD13XX_SET_MULTIPLEX_RATIO, ssd130x->height - 1,
-		2, SSD130X_SET_DISPLAY_OFFSET, ssd130x->com_offset,
-		2, SSD130X_SET_CLOCK_FREQ, dclk,
+		SSD130X_CMD(SSD13XX_CONTRAST, ssd130x->contrast),
+		SSD130X_CMD(seg_remap),
+		SSD130X_CMD(com_invdir),
+		SSD130X_CMD(SSD13XX_SET_MULTIPLEX_RATIO, ssd130x->height - 1),
+		SSD130X_CMD(SSD130X_SET_DISPLAY_OFFSET, ssd130x->com_offset),
+		SSD130X_CMD(SSD130X_SET_CLOCK_FREQ, dclk),
 		0
 	};
 	/* clang-format on */
@@ -508,10 +514,10 @@ static int ssd130x_init(struct ssd130x_device *ssd130x)
 	{
 		/* clang-format off */
 		u8 init_seq2[] = {
-			2, SSD130X_SET_PRECHARGE_PERIOD, precharge,
-			2, SSD130X_SET_COM_PINS_CONFIG, compins,
-			2, SSD130X_SET_VCOMH, ssd130x->vcomh,
-			2, SSD130X_CHARGE_PUMP, chargepump,
+			SSD130X_CMD(SSD130X_SET_PRECHARGE_PERIOD, precharge),
+			SSD130X_CMD(SSD130X_SET_COM_PINS_CONFIG, compins),
+			SSD130X_CMD(SSD130X_SET_VCOMH, ssd130x->vcomh),
+			SSD130X_CMD(SSD130X_CHARGE_PUMP, chargepump),
 			0
 		};
 		/* clang-format on */
@@ -554,7 +560,7 @@ static int ssd130x_init(struct ssd130x_device *ssd130x)
 
 /* clang-format off */
 static const u8 ssd132x_init_pre[] = {
-	2, SSD13XX_CONTRAST, 0x80,
+	SSD130X_CMD(SSD13XX_CONTRAST, 0x80),
 	0
 };
 
@@ -564,22 +570,22 @@ static const u8 ssd132x_init_pre[] = {
  * COM Split Odd Even
  */
 static const u8 ssd132x_init_mid[] = {
-	2, SSD13XX_SET_SEG_REMAP, 0x53,
-	2, SSD132X_SET_DISPLAY_START, 0x00,
-	2, SSD132X_SET_DISPLAY_OFFSET, 0x00,
-	1, SSD132X_SET_DISPLAY_NORMAL,
+	SSD130X_CMD(SSD13XX_SET_SEG_REMAP, 0x53),
+	SSD130X_CMD(SSD132X_SET_DISPLAY_START, 0x00),
+	SSD130X_CMD(SSD132X_SET_DISPLAY_OFFSET, 0x00),
+	SSD130X_CMD(SSD132X_SET_DISPLAY_NORMAL),
 	0
 };
 
 static const u8 ssd132x_init_post[] = {
-	2, SSD132X_SET_PHASE_LENGTH, 0x55,
-	1, SSD132X_SELECT_DEFAULT_TABLE,
-	2, SSD132X_SET_CLOCK_FREQ, 0x01,
-	2, SSD132X_SET_FUNCTION_SELECT_A, 0x01,
-	2, SSD132X_SET_PRECHARGE_PERIOD, 0x01,
-	2, SSD132X_SET_PRECHARGE_VOLTAGE, 0x08,
-	2, SSD130X_SET_VCOMH_VOLTAGE, 0x07,
-	2, SSD132X_SET_FUNCTION_SELECT_B, 0x62,
+	SSD130X_CMD(SSD132X_SET_PHASE_LENGTH, 0x55),
+	SSD130X_CMD(SSD132X_SELECT_DEFAULT_TABLE),
+	SSD130X_CMD(SSD132X_SET_CLOCK_FREQ, 0x01),
+	SSD130X_CMD(SSD132X_SET_FUNCTION_SELECT_A, 0x01),
+	SSD130X_CMD(SSD132X_SET_PRECHARGE_PERIOD, 0x01),
+	SSD130X_CMD(SSD132X_SET_PRECHARGE_VOLTAGE, 0x08),
+	SSD130X_CMD(SSD130X_SET_VCOMH_VOLTAGE, 0x07),
+	SSD130X_CMD(SSD132X_SET_FUNCTION_SELECT_B, 0x62),
 	0
 };
 /* clang-format on */
@@ -596,10 +602,10 @@ static int ssd132x_init(struct ssd130x_device *ssd130x)
 	{
 		/* clang-format off */
 		u8 dyn[] = {
-			3, SSD132X_SET_COL_RANGE, 0x00,
-			   ssd130x->width / SSD132X_SEGMENT_WIDTH - 1,
-			3, SSD132X_SET_ROW_RANGE, 0x00,
-			   ssd130x->height - 1,
+			SSD130X_CMD(SSD132X_SET_COL_RANGE, 0x00,
+				    ssd130x->width / SSD132X_SEGMENT_WIDTH - 1),
+			SSD130X_CMD(SSD132X_SET_ROW_RANGE, 0x00,
+				    ssd130x->height - 1),
 			0
 		};
 		/* clang-format on */
@@ -624,10 +630,10 @@ static int ssd132x_init(struct ssd130x_device *ssd130x)
 
 /* clang-format off */
 static const u8 ssd133x_init_pre[] = {
-	2, SSD133X_CONTRAST_A, 0x91,
-	2, SSD133X_CONTRAST_B, 0x50,
-	2, SSD133X_CONTRAST_C, 0x7d,
-	2, SSD133X_SET_MASTER_CURRENT, 0x06,
+	SSD130X_CMD(SSD133X_CONTRAST_A, 0x91),
+	SSD130X_CMD(SSD133X_CONTRAST_B, 0x50),
+	SSD130X_CMD(SSD133X_CONTRAST_C, 0x7d),
+	SSD130X_CMD(SSD133X_SET_MASTER_CURRENT, 0x06),
 	0
 };
 
@@ -638,23 +644,23 @@ static const u8 ssd133x_init_pre[] = {
  * 256 color format
  */
 static const u8 ssd133x_init_mid[] = {
-	2, SSD13XX_SET_SEG_REMAP, 0x20,
-	2, SSD133X_SET_DISPLAY_START, 0x00,
-	2, SSD133X_SET_DISPLAY_OFFSET, 0x00,
-	1, SSD133X_SET_DISPLAY_NORMAL,
+	SSD130X_CMD(SSD13XX_SET_SEG_REMAP, 0x20),
+	SSD130X_CMD(SSD133X_SET_DISPLAY_START, 0x00),
+	SSD130X_CMD(SSD133X_SET_DISPLAY_OFFSET, 0x00),
+	SSD130X_CMD(SSD133X_SET_DISPLAY_NORMAL),
 	0
 };
 
 static const u8 ssd133x_init_post[] = {
-	2, SSD133X_SET_MASTER_CONFIG, 0x8e,
-	2, SSD133X_POWER_SAVE_MODE, 0x0b,
-	2, SSD133X_PHASES_PERIOD, 0x31,
-	2, SSD133X_SET_CLOCK_FREQ, 0xf0,
-	2, SSD132X_SET_PRECHARGE_A, 0x64,
-	2, SSD132X_SET_PRECHARGE_B, 0x78,
-	2, SSD132X_SET_PRECHARGE_C, 0x64,
-	2, SSD133X_SET_PRECHARGE_VOLTAGE, 0x3a,
-	2, SSD133X_SET_VCOMH_VOLTAGE, 0x3e,
+	SSD130X_CMD(SSD133X_SET_MASTER_CONFIG, 0x8e),
+	SSD130X_CMD(SSD133X_POWER_SAVE_MODE, 0x0b),
+	SSD130X_CMD(SSD133X_PHASES_PERIOD, 0x31),
+	SSD130X_CMD(SSD133X_SET_CLOCK_FREQ, 0xf0),
+	SSD130X_CMD(SSD132X_SET_PRECHARGE_A, 0x64),
+	SSD130X_CMD(SSD132X_SET_PRECHARGE_B, 0x78),
+	SSD130X_CMD(SSD132X_SET_PRECHARGE_C, 0x64),
+	SSD130X_CMD(SSD133X_SET_PRECHARGE_VOLTAGE, 0x3a),
+	SSD130X_CMD(SSD133X_SET_VCOMH_VOLTAGE, 0x3e),
 	0
 };
 /* clang-format on */
@@ -671,10 +677,10 @@ static int ssd133x_init(struct ssd130x_device *ssd130x)
 	{
 		/* clang-format off */
 		u8 dyn[] = {
-			3, SSD133X_SET_COL_RANGE, 0x00,
-			   ssd130x->width - 1,
-			3, SSD133X_SET_ROW_RANGE, 0x00,
-			   ssd130x->height - 1,
+			SSD130X_CMD(SSD133X_SET_COL_RANGE, 0x00,
+				    ssd130x->width - 1),
+			SSD130X_CMD(SSD133X_SET_ROW_RANGE, 0x00,
+				    ssd130x->height - 1),
 			0
 		};
 		/* clang-format on */
@@ -837,8 +843,8 @@ static int ssd132x_update_rect(struct ssd130x_device *ssd130x,
 	{
 		/* clang-format off */
 		u8 range_cmds[] = {
-			3, SSD132X_SET_COL_RANGE, x / segment_width, columns - 1,
-			3, SSD132X_SET_ROW_RANGE, y, rows - 1,
+			SSD130X_CMD(SSD132X_SET_COL_RANGE, x / segment_width, columns - 1),
+			SSD130X_CMD(SSD132X_SET_ROW_RANGE, y, rows - 1),
 			0
 		};
 		/* clang-format on */
@@ -893,8 +899,8 @@ static int ssd133x_update_rect(struct ssd130x_device *ssd130x,
 	{
 		/* clang-format off */
 		u8 range_cmds[] = {
-			3, SSD133X_SET_COL_RANGE, x, columns - 1,
-			3, SSD133X_SET_ROW_RANGE, y, rows - 1,
+			SSD130X_CMD(SSD133X_SET_COL_RANGE, x, columns - 1),
+			SSD130X_CMD(SSD133X_SET_ROW_RANGE, y, rows - 1),
 			0
 		};
 		/* clang-format on */
