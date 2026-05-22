@@ -23,6 +23,22 @@
 #define SSD13XX_DATA				0x40
 #define SSD13XX_COMMAND				0x80
 
+struct drm_format_conv_state;
+struct drm_framebuffer;
+struct drm_rect;
+struct iosys_map;
+struct ssd130x_device;
+
+struct ssd13xx_family_ops {
+	int (*init)(struct ssd130x_device *ssd130x);
+	void (*clear_screen)(struct ssd130x_device *ssd130x, u8 *data_array);
+	int (*fmt_convert)(struct drm_framebuffer *fb,
+			   const struct iosys_map *vmap, struct drm_rect *rect,
+			   u8 *buf, u8 *data_array,
+			   struct drm_format_conv_state *fmtcnv_state);
+	u32 native_format;
+};
+
 enum ssd130x_family_ids {
 	SSD130X_FAMILY,
 	SSD132X_FAMILY,
@@ -56,6 +72,7 @@ struct ssd130x_deviceinfo {
 	bool page_mode_only;
 
 	enum ssd130x_family_ids family_id;
+	const struct ssd13xx_family_ops *ops;
 };
 
 struct ssd130x_device {
