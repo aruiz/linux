@@ -14,6 +14,7 @@
 #include <linux/mm.h>
 #include <linux/namei.h>
 #include <linux/overflow.h>
+#include <linux/magic.h>
 #include <linux/security.h>
 #include <linux/slab.h>
 #include <linux/string.h>
@@ -24,6 +25,7 @@
 
 #include <asm/byteorder.h>
 
+#include "../fs/erofs/erofs_fs.h"
 #include "do_mounts.h"
 #include "initramfs_internal.h"
 
@@ -716,6 +718,82 @@ static void __init populate_initrd_image(char *err)
 }
 #endif /* CONFIG_BLK_DEV_RAM */
 
+#ifdef CONFIG_INITRD_EROFS
+#define EROFS_BLKSZBITS_MIN 9 /* 512 bytes */
+#define EROFS_BLKSZBITS_MAX 30 /* 1 GiB */
+#define EROFS_SB_MINSIZE (EROFS_SUPER_OFFSET + sizeof(struct erofs_super_block))
+
+/*
+ * Try to parse an EROFS superblock at @buf + @off.
+ * Returns the image size in bytes, or 0 if not a valid EROFS image.
+ */
+static unsigned long __init try_parse_erofs(void *buf, unsigned long off,
+					    unsigned long len)
+{
+	struct erofs_super_block *sb;
+	u64 blocks, img_size;
+
+	/* Need enough room for the 1024-byte reserved area + superblock */
+	if (len < EROFS_SB_MINSIZE || off > len - EROFS_SB_MINSIZE)
+		return 0;
+
+	sb = buf + off + EROFS_SUPER_OFFSET;
+	if (le32_to_cpu(sb->magic) != EROFS_SUPER_MAGIC_V1)
+		return 0;
+
+	/* blkszbits is log2(block_size); valid range is 512 B .. 1 GiB */
+	if (sb->blkszbits < EROFS_BLKSZBITS_MIN ||
+	    sb->blkszbits > EROFS_BLKSZBITS_MAX)
+		return 0;
+
+	if (le32_to_cpu(sb->feature_incompat) & ~EROFS_ALL_FEATURE_INCOMPAT)
+		return 0;
+
+	/*
+	 * The block count is a 32-bit field, extended to 48 bits when
+	 * the INCOMPAT_48BIT feature flag is set.
+	 */
+	blocks = le32_to_cpu(sb->blocks_lo);
+	if (le32_to_cpu(sb->feature_incompat) & EROFS_FEATURE_INCOMPAT_48BIT)
+		blocks |= (u64)le16_to_cpu(sb->rb.blocks_hi) << 32;
+
+	/* Reject zero blocks or values that would overflow on shift */
+	if (!blocks || blocks > (U64_MAX >> sb->blkszbits))
+		return 0;
+
+	/* Verify the computed image size fits within the remaining buffer */
+	img_size = blocks << sb->blkszbits;
+	if (img_size > len - off)
+		return 0;
+
+	return img_size;
+}
+
+/*
+ * Scan for an EROFS superblock anywhere in @buf.  Returns true on the
+ * first valid image found.
+ */
+static bool __init initrd_has_erofs(void *buf, unsigned long len)
+{
+	unsigned long off;
+
+	for (off = 0; off + EROFS_SB_MINSIZE <= len; off++) {
+		if (try_parse_erofs(buf, off, len)) {
+			pr_info("initrd: EROFS image detected at offset %lu\n",
+				off);
+			return true;
+		}
+	}
+	return false;
+}
+
+static int __init erofs_initrd_setup(void)
+{
+	/* TODO: scan segments, mount EROFS layers, assemble overlayfs */
+	return -ENODEV;
+}
+#endif
+
 static void __init do_populate_rootfs(void *unused, async_cookie_t cookie)
 {
 	/* Load the built in initramfs */
@@ -725,6 +803,14 @@ static void __init do_populate_rootfs(void *unused, async_cookie_t cookie)
 
 	if (!initrd_start || IS_ENABLED(CONFIG_INITRAMFS_FORCE))
 		goto done;
+
+#ifdef CONFIG_INITRD_EROFS
+	if (initrd_has_erofs((void *)initrd_start, initrd_end - initrd_start)) {
+		if (!erofs_initrd_setup())
+			goto done;
+		pr_err("initrd: EROFS setup failed, falling back to cpio\n");
+	}
+#endif
 
 	if (IS_ENABLED(CONFIG_BLK_DEV_RAM))
 		printk(KERN_INFO "Trying to unpack rootfs image as initramfs...\n");
