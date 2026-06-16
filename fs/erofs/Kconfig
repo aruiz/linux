@@ -213,3 +213,14 @@ config EROFS_FS_PAGE_CACHE_SHARE
 	  content fingerprints on the same machine.
 
 	  If unsure, say N.
+
+config EROFS_FS_MEMBACK
+	bool "EROFS memory-backed mount support"
+	depends on EROFS_FS=y
+	help
+	  Enable mounting EROFS images directly from a contiguous kernel
+	  memory region (e.g. an embedded initramfs) without block I/O.
+
+	  This is a prerequisite for using EROFS as an initramfs format.
+
+	  If unsure, say N.

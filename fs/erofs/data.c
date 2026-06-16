@@ -22,7 +22,10 @@ void erofs_put_metabuf(struct erofs_buf *buf)
 	if (!buf->page)
 		return;
 	erofs_unmap_metabuf(buf);
-	folio_put(page_folio(buf->page));
+#ifdef CONFIG_EROFS_FS_MEMBACK
+	if (!buf->memback_sbi)
+#endif
+		folio_put(page_folio(buf->page));
 	buf->page = NULL;
 }
 
@@ -44,6 +47,32 @@ void *erofs_bread(struct erofs_buf *buf, erofs_off_t offset, bool need_kmap)
 		if (err < 0)
 			return ERR_PTR(err);
 	}
+
+#ifdef CONFIG_EROFS_FS_MEMBACK
+	if (buf->memback_sbi) {
+		struct erofs_sb_info *sbi = buf->memback_sbi;
+		struct page *page;
+		void *addr;
+
+		WARN_ON_ONCE(buf->off);
+		addr = (char *)sbi->memback_data + offset;
+
+		if (offset >= sbi->memback_size)
+			return ERR_PTR(-EFSCORRUPTED);
+
+		page = is_vmalloc_addr(addr) ? vmalloc_to_page(addr) :
+					       virt_to_page(addr);
+		if (buf->page != page) {
+			erofs_unmap_metabuf(buf);
+			buf->page = page;
+		}
+		if (!need_kmap)
+			return NULL;
+		if (!buf->base)
+			buf->base = kmap_local_page(buf->page);
+		return buf->base + offset_in_page(addr);
+	}
+#endif
 
 	if (buf->page) {
 		folio = page_folio(buf->page);
@@ -70,12 +99,22 @@ int erofs_init_metabuf(struct erofs_buf *buf, struct super_block *sb,
 	struct erofs_sb_info *sbi = EROFS_SB(sb);
 
 	buf->file = NULL;
+#ifdef CONFIG_EROFS_FS_MEMBACK
+	buf->memback_sbi = NULL;
+#endif
 	if (in_metabox) {
 		if (unlikely(!sbi->metabox_inode))
 			return -EFSCORRUPTED;
 		buf->mapping = sbi->metabox_inode->i_mapping;
 		return 0;
 	}
+#ifdef CONFIG_EROFS_FS_MEMBACK
+	if (erofs_is_memback_mode(sbi)) {
+		buf->memback_sbi = sbi;
+		buf->off = 0;
+		return 0;
+	}
+#endif
 	buf->off = sbi->dif0.fsoff;
 	if (erofs_is_fileio_mode(sbi)) {
 		buf->file = sbi->dif0.file;	/* some fs like FUSE needs it */

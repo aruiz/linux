@@ -625,7 +625,7 @@ static void erofs_set_sysfs_name(struct super_block *sb)
 					     sbi->fsid);
 	else if (sbi->fsid)
 		super_set_sysfs_name_generic(sb, "%s", sbi->fsid);
-	else if (erofs_is_fileio_mode(sbi))
+	else if (erofs_is_memback_mode(sbi) || erofs_is_fileio_mode(sbi))
 		super_set_sysfs_name_generic(sb, "%s",
 					     bdi_dev_name(sb->s_bdi));
 	else
@@ -708,7 +708,7 @@ static int erofs_fc_fill_super(struct super_block *sb, struct fs_context *fc)
 			return -EINVAL;
 		}
 
-		if (erofs_is_fileio_mode(sbi)) {
+		if (erofs_is_memback_mode(sbi) || erofs_is_fileio_mode(sbi)) {
 			sb->s_blocksize = 1 << sbi->blkszbits;
 			sb->s_blocksize_bits = sbi->blkszbits;
 		} else if (!sb_set_blocksize(sb, 1 << sbi->blkszbits)) {
@@ -795,6 +795,16 @@ static int erofs_fc_get_tree(struct fs_context *fc)
 {
 	struct erofs_sb_info *sbi = fc->s_fs_info;
 	int ret;
+
+#ifdef CONFIG_EROFS_FS_MEMBACK
+	ret = erofs_memback_consume_pending(sbi);
+	if (ret < 0)
+		return invalf(fc, "erofs: memback region has zero size");
+	if (ret > 0)
+		return get_tree_nodev(fc, erofs_fc_fill_super);
+	if (erofs_is_memback_mode(sbi))
+		return get_tree_nodev(fc, erofs_fc_fill_super);
+#endif
 
 	if (IS_ENABLED(CONFIG_EROFS_FS_ONDEMAND) && sbi->fsid)
 		return get_tree_nodev(fc, erofs_fc_fill_super);
@@ -928,7 +938,8 @@ static void erofs_kill_sb(struct super_block *sb)
 {
 	struct erofs_sb_info *sbi = EROFS_SB(sb);
 
-	if ((IS_ENABLED(CONFIG_EROFS_FS_ONDEMAND) && sbi->fsid) ||
+	if (erofs_is_memback_mode(sbi) ||
+	    (IS_ENABLED(CONFIG_EROFS_FS_ONDEMAND) && sbi->fsid) ||
 	    sbi->dif0.file)
 		kill_anon_super(sb);
 	else
