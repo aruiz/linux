@@ -117,7 +117,7 @@ static void __init initramfs_test_extract(struct kunit *test)
 	len = fill_cpio(c, ARRAY_SIZE(c), false, cpio_srcbuf);
 
 	ktime_get_real_ts64(&ts_before);
-	err = unpack_to_rootfs(cpio_srcbuf, len);
+	err = unpack_to_rootfs(cpio_srcbuf, len, NULL);
 	ktime_get_real_ts64(&ts_after);
 	if (err) {
 		KUNIT_FAIL(test, "unpack failed %s", err);
@@ -197,7 +197,7 @@ static void __init initramfs_test_fname_overrun(struct kunit *test)
 		suffix_off--;
 	}
 
-	err = unpack_to_rootfs(cpio_srcbuf, len);
+	err = unpack_to_rootfs(cpio_srcbuf, len, NULL);
 	KUNIT_EXPECT_NOT_NULL(test, err);
 
 	kfree(cpio_srcbuf);
@@ -233,7 +233,7 @@ static void __init initramfs_test_data(struct kunit *test)
 
 	len = fill_cpio(c, ARRAY_SIZE(c), false, cpio_srcbuf);
 
-	err = unpack_to_rootfs(cpio_srcbuf, len);
+	err = unpack_to_rootfs(cpio_srcbuf, len, NULL);
 	KUNIT_EXPECT_NULL(test, err);
 
 	file = filp_open(c[0].fname, O_RDONLY, 0);
@@ -288,7 +288,7 @@ static void __init initramfs_test_csum(struct kunit *test)
 
 	len = fill_cpio(c, ARRAY_SIZE(c), false, cpio_srcbuf);
 
-	err = unpack_to_rootfs(cpio_srcbuf, len);
+	err = unpack_to_rootfs(cpio_srcbuf, len, NULL);
 	KUNIT_EXPECT_NULL(test, err);
 
 	KUNIT_EXPECT_EQ(test, init_unlink(c[0].fname), 0);
@@ -298,7 +298,7 @@ static void __init initramfs_test_csum(struct kunit *test)
 	c[0].csum--;
 	len = fill_cpio(c, ARRAY_SIZE(c), false, cpio_srcbuf);
 
-	err = unpack_to_rootfs(cpio_srcbuf, len);
+	err = unpack_to_rootfs(cpio_srcbuf, len, NULL);
 	KUNIT_EXPECT_NOT_NULL(test, err);
 
 	/*
@@ -344,7 +344,7 @@ static void __init initramfs_test_hardlink(struct kunit *test)
 
 	len = fill_cpio(c, ARRAY_SIZE(c), false, cpio_srcbuf);
 
-	err = unpack_to_rootfs(cpio_srcbuf, len);
+	err = unpack_to_rootfs(cpio_srcbuf, len, NULL);
 	KUNIT_EXPECT_NULL(test, err);
 
 	KUNIT_EXPECT_EQ(test, init_stat(c[0].fname, &st0, 0), 0);
@@ -387,7 +387,7 @@ static void __init initramfs_test_many(struct kunit *test)
 	}
 
 	len = p - cpio_srcbuf;
-	err = unpack_to_rootfs(cpio_srcbuf, len);
+	err = unpack_to_rootfs(cpio_srcbuf, len, NULL);
 	KUNIT_EXPECT_NULL(test, err);
 
 	for (i = 0; i < INITRAMFS_TEST_MANY_LIMIT; i++) {
@@ -439,7 +439,7 @@ static void __init initramfs_test_fname_pad(struct kunit *test)
 	memcpy(tbufs->padded_fname, "padded_fname", sizeof("padded_fname"));
 	len = fill_cpio(c, ARRAY_SIZE(c), false, tbufs->cpio_srcbuf);
 
-	err = unpack_to_rootfs(tbufs->cpio_srcbuf, len);
+	err = unpack_to_rootfs(tbufs->cpio_srcbuf, len, NULL);
 	KUNIT_EXPECT_NULL(test, err);
 
 	file = filp_open(c[0].fname, O_RDONLY, 0);
@@ -496,7 +496,7 @@ static void __init initramfs_test_fname_path_max(struct kunit *test)
 	len = fill_cpio(c, ARRAY_SIZE(c), false, tbufs->cpio_src);
 
 	/* unpack skips over fname_oversize instead of returning an error */
-	err = unpack_to_rootfs(tbufs->cpio_src, len);
+	err = unpack_to_rootfs(tbufs->cpio_src, len, NULL);
 	KUNIT_EXPECT_NULL(test, err);
 
 	KUNIT_EXPECT_EQ(test, init_stat("fname_oversize", &st0, 0), -ENOENT);

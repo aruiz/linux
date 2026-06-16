@@ -2,7 +2,7 @@
 #ifndef __INITRAMFS_INTERNAL_H__
 #define __INITRAMFS_INTERNAL_H__
 
-char *unpack_to_rootfs(char *buf, unsigned long len);
+char *unpack_to_rootfs(char *buf, unsigned long len, unsigned long *consumed);
 #define CPIO_HDRLEN 110
 
 #endif
