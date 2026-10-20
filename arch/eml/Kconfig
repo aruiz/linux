@@ -61,4 +61,11 @@ config ARCH_DEFCONFIG
 	string
 	default "arch/eml/configs/defconfig"
 
+config EML_CMDLINE
+	string "Built-in kernel command line"
+	default "console=ttyEML0"
+	help
+	  Default kernel command line used when no command line is passed
+	  via the EFI Loaded Image Protocol. Set to empty string to disable.
+
 endmenu

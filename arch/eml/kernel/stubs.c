@@ -20,13 +20,16 @@ struct task_struct *eml_current_task = &init_task;
 unsigned long eml_irq_flags = 1;
 
 extern char eml_cmdline[];
+extern void eml_dump_memory_map(void);
 
 void __init setup_arch(char **cmdline_p)
 {
 	eml_setup_memory();
 	eml_setup_early_console();
+	eml_dump_memory_map();
 	eml_parse_command_line();
-	*cmdline_p = eml_cmdline;
+	strscpy(boot_command_line, eml_cmdline, COMMAND_LINE_SIZE);
+	*cmdline_p = boot_command_line;
 }
 
 void __init init_IRQ(void)

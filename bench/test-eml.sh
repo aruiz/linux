@@ -69,6 +69,12 @@ nocheck() {
 	fi
 }
 
+check "EML: EFI memory map"
+check "EML: using built-in command line"
+check "Kernel command line: console=ttyEML0"
+check "EML: found.*EFI file system"
+check "EML: ESP volume"
+
 nocheck "unable to open an initial console"
 
 # Panic stack trace should appear (no rootfs = expected panic)

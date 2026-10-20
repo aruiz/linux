@@ -7,6 +7,82 @@
 #include <asm/page.h>
 #include <asm/sections.h>
 
+static const char *eml_mem_type_name(u32 type)
+{
+	static const char *const names[] = {
+		[EFI_RESERVED_TYPE] = "Reserved",
+		[EFI_LOADER_CODE] = "Loader Code",
+		[EFI_LOADER_DATA] = "Loader Data",
+		[EFI_BOOT_SERVICES_CODE] = "Boot Code",
+		[EFI_BOOT_SERVICES_DATA] = "Boot Data",
+		[EFI_RUNTIME_SERVICES_CODE] = "Runtime Code",
+		[EFI_RUNTIME_SERVICES_DATA] = "Runtime Data",
+		[EFI_CONVENTIONAL_MEMORY] = "Conventional",
+		[EFI_UNUSABLE_MEMORY] = "Unusable",
+		[EFI_ACPI_RECLAIM_MEMORY] = "ACPI Reclaim",
+		[EFI_ACPI_MEMORY_NVS] = "ACPI NVS",
+		[EFI_MEMORY_MAPPED_IO] = "MMIO",
+		[EFI_MEMORY_MAPPED_IO_PORT_SPACE] = "MMIO Port",
+		[EFI_PAL_CODE] = "PAL Code",
+		[EFI_PERSISTENT_MEMORY] = "Persistent",
+	};
+
+	if (type < ARRAY_SIZE(names) && names[type])
+		return names[type];
+	return "Unknown";
+}
+
+void __init eml_dump_memory_map(void)
+{
+	efi_memory_desc_t *map;
+	unsigned long map_size, desc_size, map_key;
+	u32 desc_version;
+	efi_status_t status;
+	unsigned long i;
+	u64 total_mem = 0, total_free = 0;
+
+	map_size = 0;
+	status = eml_systab->boot_services->get_memory_map(
+		&map_size, NULL, &map_key, &desc_size, &desc_version);
+
+	map_size += desc_size * 4;
+	status = eml_systab->boot_services->allocate_pool(
+		EFI_LOADER_DATA, map_size, (void **)&map);
+	if (status != EFI_SUCCESS) {
+		pr_err("EML: failed to allocate memory map buffer\n");
+		return;
+	}
+
+	status = eml_systab->boot_services->get_memory_map(
+		&map_size, map, &map_key, &desc_size, &desc_version);
+	if (status != EFI_SUCCESS) {
+		pr_err("EML: GetMemoryMap failed: 0x%lx\n",
+		       (unsigned long)status);
+		eml_systab->boot_services->free_pool(map);
+		return;
+	}
+
+	pr_info("EML: EFI memory map (%lu entries):\n", map_size / desc_size);
+
+	for (i = 0; i < map_size; i += desc_size) {
+		efi_memory_desc_t *desc = (void *)map + i;
+		u64 size = desc->num_pages << EFI_PAGE_SHIFT;
+
+		pr_info("  %016llx-%016llx %-14s %4llu MB\n", desc->phys_addr,
+			desc->phys_addr + size - 1,
+			eml_mem_type_name(desc->type), size >> 20);
+
+		total_mem += size;
+		if (desc->type == EFI_CONVENTIONAL_MEMORY)
+			total_free += size;
+	}
+
+	pr_info("EML: total: %llu MB, free conventional: %llu MB\n",
+		total_mem >> 20, total_free >> 20);
+
+	eml_systab->boot_services->free_pool(map);
+}
+
 /*
  * Allocate memory from UEFI Boot Services so the firmware won't reuse it,
  * then hand it to Linux's memblock allocator.  This avoids the conflict

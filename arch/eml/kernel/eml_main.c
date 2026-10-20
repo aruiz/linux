@@ -52,13 +52,13 @@ void __init eml_parse_command_line(void)
 		eml_image_handle, &li_guid, (void **)&li);
 	if (status != EFI_SUCCESS) {
 		pr_info("EML: Loaded Image Protocol not available\n");
-		return;
+		goto fallback;
 	}
 
 	opts = li->load_options;
 	opts_size = li->load_options_size;
 	if (!opts || opts_size == 0)
-		return;
+		goto fallback;
 
 	len = opts_size / sizeof(efi_char16_t);
 	if (len >= COMMAND_LINE_SIZE)
@@ -76,6 +76,14 @@ void __init eml_parse_command_line(void)
 		memmove(eml_cmdline, dst, strlen(dst) + 1);
 	} else {
 		eml_cmdline[0] = '\0';
+	}
+
+fallback:
+	if (eml_cmdline[0] == '\0') {
+		strscpy(eml_cmdline, CONFIG_EML_CMDLINE, sizeof(eml_cmdline));
+		if (eml_cmdline[0] != '\0')
+			pr_info("EML: using built-in command line: %s\n",
+				eml_cmdline);
 	}
 }
 

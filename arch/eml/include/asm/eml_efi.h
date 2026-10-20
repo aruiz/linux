@@ -248,6 +248,62 @@ struct eml_loaded_image {
 	void *unload;
 };
 
+/*
+ * EFI Simple File System Protocol
+ */
+#define EFI_SIMPLE_FILE_SYSTEM_PROTOCOL_GUID                               \
+	EFI_GUID(0x964e5b22, 0x6459, 0x11d2, 0x8e, 0x39, 0x00, 0xa0, 0xc9, \
+		 0x69, 0x72, 0x3b)
+
+#define EFI_FILE_INFO_ID                                                   \
+	EFI_GUID(0x09576e92, 0x6d3f, 0x11d2, 0x8e, 0x39, 0x00, 0xa0, 0xc9, \
+		 0x69, 0x72, 0x3b)
+
+#define EFI_FILE_MODE_READ 0x0000000000000001ULL
+#define EFI_FILE_DIRECTORY 0x0000000000000010ULL
+
+struct eml_file_protocol;
+
+struct eml_file_protocol {
+	u64 revision;
+	efi_status_t(MSABI *open)(struct eml_file_protocol *this,
+				  struct eml_file_protocol **new_handle,
+				  efi_char16_t *file_name, u64 open_mode,
+				  u64 attributes);
+	efi_status_t(MSABI *close)(struct eml_file_protocol *this);
+	void *delete;
+	efi_status_t(MSABI *read)(struct eml_file_protocol *this,
+				  unsigned long *buffer_size, void *buffer);
+	efi_status_t(MSABI *write)(struct eml_file_protocol *this,
+				   unsigned long *buffer_size, void *buffer);
+	efi_status_t(MSABI *get_position)(struct eml_file_protocol *this,
+					  u64 *position);
+	efi_status_t(MSABI *set_position)(struct eml_file_protocol *this,
+					  u64 position);
+	efi_status_t(MSABI *get_info)(struct eml_file_protocol *this,
+				      efi_guid_t *information_type,
+				      unsigned long *buffer_size, void *buffer);
+	void *set_info;
+	efi_status_t(MSABI *flush)(struct eml_file_protocol *this);
+};
+
+struct eml_simple_file_system {
+	u64 revision;
+	efi_status_t(MSABI *open_volume)(struct eml_simple_file_system *this,
+					 struct eml_file_protocol **root);
+};
+
+struct eml_file_info {
+	u64 size;
+	u64 file_size;
+	u64 physical_size;
+	efi_time_t create_time;
+	efi_time_t last_access_time;
+	efi_time_t modification_time;
+	u64 attribute;
+	efi_char16_t file_name[];
+};
+
 /* Global EFI state */
 extern struct eml_system_table *eml_systab;
 extern efi_handle_t eml_image_handle;
