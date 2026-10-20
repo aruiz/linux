@@ -9,7 +9,6 @@ config EML
 	select ARCH_HAS_FORTIFY_SOURCE
 	select GENERIC_IRQ_SHOW
 	select GENERIC_CPU_DEVICES
-	select NO_DMA
 	select NO_IOPORT_MAP
 	select HAVE_PAGE_SIZE_4KB
 	select HAVE_DEBUG_BUGVERBOSE
@@ -25,7 +24,7 @@ config MMU
 	bool
 	default n
 
-config NO_IOMEM
+config PHYS_ADDR_T_64BIT
 	bool
 	default y
 
@@ -60,6 +59,16 @@ config PGTABLE_LEVELS
 config ARCH_DEFCONFIG
 	string
 	default "arch/eml/configs/defconfig"
+
+config DRM_EML
+	tristate "EML EFI GOP DRM driver"
+	depends on DRM && EML
+	select DRM_GEM_DMA_HELPER
+	select DRM_KMS_HELPER
+	default y
+	help
+	  DRM/KMS driver for EFI Mode Linux that uses the UEFI Graphics
+	  Output Protocol (GOP) framebuffer as the display scanout buffer.
 
 config EML_CMDLINE
 	string "Built-in kernel command line"

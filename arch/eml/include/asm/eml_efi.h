@@ -124,7 +124,9 @@ struct eml_boot_services {
 						  void *search_key,
 						  unsigned long *no_handles,
 						  efi_handle_t **buffer);
-	void *locate_protocol;
+	efi_status_t(MSABI *locate_protocol)(efi_guid_t *protocol,
+					     void *registration,
+					     void **interface);
 	void *install_multiple_protocol_interfaces;
 	void *uninstall_multiple_protocol_interfaces;
 
@@ -302,6 +304,54 @@ struct eml_file_info {
 	efi_time_t modification_time;
 	u64 attribute;
 	efi_char16_t file_name[];
+};
+
+/*
+ * EFI Graphics Output Protocol (GOP)
+ */
+#define EFI_GRAPHICS_OUTPUT_PROTOCOL_GUID                                  \
+	EFI_GUID(0x9042a9de, 0x23dc, 0x4a38, 0x96, 0xfb, 0x7a, 0xde, 0xd0, \
+		 0x80, 0x51, 0x6a)
+
+#define PIXEL_RGB_RESERVED_8BIT_PER_COLOR 0
+#define PIXEL_BGR_RESERVED_8BIT_PER_COLOR 1
+#define PIXEL_BIT_MASK 2
+#define PIXEL_BLT_ONLY 3
+
+struct eml_pixel_bitmask {
+	u32 red_mask;
+	u32 green_mask;
+	u32 blue_mask;
+	u32 reserved_mask;
+};
+
+struct eml_gop_mode_info {
+	u32 version;
+	u32 horizontal_resolution;
+	u32 vertical_resolution;
+	u32 pixel_format;
+	struct eml_pixel_bitmask pixel_information;
+	u32 pixels_per_scan_line;
+};
+
+struct eml_gop_mode {
+	u32 max_mode;
+	u32 mode;
+	struct eml_gop_mode_info *info;
+	unsigned long size_of_info;
+	u64 frame_buffer_base;
+	unsigned long frame_buffer_size;
+};
+
+struct eml_gop;
+
+struct eml_gop {
+	efi_status_t(MSABI *query_mode)(struct eml_gop *this, u32 mode_number,
+					unsigned long *size_of_info,
+					struct eml_gop_mode_info **info);
+	efi_status_t(MSABI *set_mode)(struct eml_gop *this, u32 mode_number);
+	void *blt;
+	struct eml_gop_mode *mode;
 };
 
 /* Global EFI state */

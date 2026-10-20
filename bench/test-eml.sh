@@ -75,6 +75,10 @@ check "Kernel command line: console=ttyEML0"
 check "EML: found.*EFI file system"
 check "EML: ESP volume"
 
+check "Initialized eml-drm"
+check "GOP.*stride=.*fb="
+check "DRM device registered"
+
 nocheck "unable to open an initial console"
 
 # Panic stack trace should appear (no rootfs = expected panic)
