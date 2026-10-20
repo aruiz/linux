@@ -16,6 +16,7 @@
 #include <asm/eml_efi.h>
 
 struct task_struct *eml_current_task = &init_task;
+unsigned long eml_irq_flags = 1;
 
 static char eml_command_line[COMMAND_LINE_SIZE] __initdata;
 
