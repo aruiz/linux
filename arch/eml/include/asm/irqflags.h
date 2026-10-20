@@ -23,12 +23,12 @@ static inline void arch_local_irq_enable(void)
 
 static inline bool arch_irqs_disabled_flags(unsigned long flags)
 {
-	return false;
+	return true;
 }
 
 static inline bool arch_irqs_disabled(void)
 {
-	return false;
+	return true;
 }
 
 static inline unsigned long arch_local_irq_save(void)

@@ -2,13 +2,18 @@
 #include <linux/init.h>
 #include <linux/sched.h>
 #include <linux/sched/task.h>
+#include <linux/sched/task_stack.h>
 #include <linux/seq_file.h>
 #include <linux/ptrace.h>
 #include <linux/delay.h>
 #include <linux/stacktrace.h>
+#include <linux/string.h>
 #include <linux/mm.h>
+#include <linux/memblock.h>
+#include <linux/mmzone.h>
 #include <linux/reboot.h>
 #include <asm/setup.h>
+#include <asm/eml_efi.h>
 
 struct task_struct *eml_current_task = &init_task;
 
@@ -16,6 +21,8 @@ static char eml_command_line[COMMAND_LINE_SIZE] __initdata;
 
 void __init setup_arch(char **cmdline_p)
 {
+	eml_setup_memory();
+	eml_setup_early_console();
 	*cmdline_p = eml_command_line;
 }
 
@@ -25,6 +32,7 @@ void __init init_IRQ(void)
 
 void __init time_init(void)
 {
+	eml_setup_timer();
 }
 
 void machine_halt(void)
@@ -43,19 +51,39 @@ void machine_restart(char *cmd)
 	machine_halt();
 }
 
+struct eml_switch_frame {
+	unsigned long r15, r14, r13, r12, rbx, rbp;
+	unsigned long ret_addr;
+};
+
 int copy_thread(struct task_struct *p, const struct kernel_clone_args *args)
 {
-	return -ENOSYS;
+	struct pt_regs *childregs = task_pt_regs(p);
+	struct eml_switch_frame *frame;
+
+	memset(childregs, 0, sizeof(*childregs));
+
+	if (unlikely(args->idle))
+		return 0;
+
+	frame = ((struct eml_switch_frame *)childregs) - 1;
+	memset(frame, 0, sizeof(*frame));
+	frame->ret_addr = (unsigned long)ret_from_fork;
+
+	if (args->fn) {
+		frame->rbx = (unsigned long)args->fn;
+		frame->r12 = (unsigned long)args->fn_arg;
+	} else {
+		*childregs = *current_pt_regs();
+		childregs->rax = 0;
+	}
+
+	p->thread.rsp = (unsigned long)frame;
+	return 0;
 }
 
 void flush_thread(void)
 {
-}
-
-struct task_struct *__switch_to(struct task_struct *prev,
-				struct task_struct *next)
-{
-	return prev;
 }
 
 void show_regs(struct pt_regs *regs)
@@ -76,23 +104,13 @@ void ptrace_disable(struct task_struct *child)
 {
 }
 
-void __delay(unsigned long loops)
-{
-	while (loops--)
-		cpu_relax();
-}
-
-void __const_udelay(unsigned long xloops)
-{
-	__delay(xloops >> 12);
-}
-
 void save_stack_trace(struct stack_trace *trace)
 {
 }
 
 void arch_zone_limits_init(unsigned long *max_zone_pfn)
 {
+	max_zone_pfn[ZONE_NORMAL] = max_low_pfn;
 }
 
 int syscall_get_arch(struct task_struct *task)

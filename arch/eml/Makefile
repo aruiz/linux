@@ -17,12 +17,12 @@ KBUILD_CFLAGS += -m64 -mcmodel=small -mno-red-zone \
 		 -ffreestanding -fno-stack-protector \
 		 -fno-strict-aliasing \
 		 -fno-asynchronous-unwind-tables \
-		 -fPIE \
+		 -fPIE -fvisibility=hidden \
 		 -D__EML__ -D__KERNEL__
 
 KBUILD_AFLAGS += -m64 -D__EML__
 
-KBUILD_LDFLAGS += -m elf_x86_64 --no-undefined
+KBUILD_LDFLAGS += -m elf_x86_64 --no-undefined --emit-relocs
 
 PHONY += linux.efi
 
@@ -32,7 +32,8 @@ all: linux.efi
 # (the PE headers are embedded in the .head section by head.S)
 quiet_cmd_efi = EFI     $@
       cmd_efi = mkdir -p $(dir $@) && $(OBJCOPY) -O binary $< $@ && \
-		truncate -s %512 $@
+		truncate -s %512 $@ && \
+		python3 $(srctree)/scripts/gen-pe-relocs.py $< $@
 
 arch/eml/boot/linux.efi: vmlinux FORCE
 	$(call if_changed,efi)

@@ -23,7 +23,11 @@ struct thread_struct {
 	{           \
 	}
 
-#define task_pt_regs(task) ((struct pt_regs *)0)
+#define task_pt_regs(task) \
+	((struct pt_regs *)((unsigned long)(task)->stack + THREAD_SIZE) - 1)
+#define current_pt_regs() task_pt_regs(current)
+
+extern void ret_from_fork(void);
 
 static inline void cpu_relax(void)
 {
