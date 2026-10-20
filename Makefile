@@ -430,6 +430,11 @@ ifeq ($(ARCH),parisc64)
        SRCARCH := parisc
 endif
 
+# Additional ARCH settings for eml (EFI Mode Linux)
+ifeq ($(ARCH),eml)
+       SRCARCH := eml
+endif
+
 export cross_compiling :=
 ifneq ($(SRCARCH),$(SUBARCH))
 cross_compiling := 1
