@@ -13,18 +13,20 @@
 #include <linux/mmzone.h>
 #include <linux/reboot.h>
 #include <asm/setup.h>
+#include <asm/sections.h>
 #include <asm/eml_efi.h>
 
 struct task_struct *eml_current_task = &init_task;
 unsigned long eml_irq_flags = 1;
 
-static char eml_command_line[COMMAND_LINE_SIZE] __initdata;
+extern char eml_cmdline[];
 
 void __init setup_arch(char **cmdline_p)
 {
 	eml_setup_memory();
 	eml_setup_early_console();
-	*cmdline_p = eml_command_line;
+	eml_parse_command_line();
+	*cmdline_p = eml_cmdline;
 }
 
 void __init init_IRQ(void)
@@ -44,11 +46,17 @@ void machine_halt(void)
 
 void machine_power_off(void)
 {
+	if (eml_systab && eml_systab->runtime_services)
+		eml_systab->runtime_services->reset_system(
+			EFI_RESET_SHUTDOWN, EFI_SUCCESS, 0, NULL);
 	machine_halt();
 }
 
 void machine_restart(char *cmd)
 {
+	if (eml_systab && eml_systab->runtime_services)
+		eml_systab->runtime_services->reset_system(
+			EFI_RESET_COLD, EFI_SUCCESS, 0, NULL);
 	machine_halt();
 }
 
@@ -89,10 +97,50 @@ void flush_thread(void)
 
 void show_regs(struct pt_regs *regs)
 {
+	if (!regs)
+		return;
+
+	pr_emerg("RIP: %016lx\n", regs->rip);
+	pr_emerg("RSP: %016lx EFLAGS: %08lx\n", regs->rsp, regs->eflags);
+	pr_emerg("RAX: %016lx RBX: %016lx RCX: %016lx\n", regs->rax, regs->rbx,
+		 regs->rcx);
+	pr_emerg("RDX: %016lx RSI: %016lx RDI: %016lx\n", regs->rdx, regs->rsi,
+		 regs->rdi);
+	pr_emerg("RBP: %016lx R08: %016lx R09: %016lx\n", regs->rbp, regs->r8,
+		 regs->r9);
+	pr_emerg("R10: %016lx R11: %016lx R12: %016lx\n", regs->r10, regs->r11,
+		 regs->r12);
+	pr_emerg("R13: %016lx R14: %016lx R15: %016lx\n", regs->r13, regs->r14,
+		 regs->r15);
+}
+
+static bool eml_in_kernel_text(unsigned long addr)
+{
+	return addr >= (unsigned long)_text && addr < (unsigned long)_end;
 }
 
 void show_stack(struct task_struct *task, unsigned long *sp, const char *loglvl)
 {
+	unsigned long *stack;
+	int i;
+
+	if (!sp) {
+		if (task && task != current)
+			sp = (unsigned long *)task->thread.rsp;
+		else
+			asm volatile("mov %%rsp, %0" : "=r"(sp));
+	}
+
+	printk("%sStack:\n", loglvl);
+	stack = sp;
+	for (i = 0; i < 24; i++)
+		printk("%s %016lx\n", loglvl, stack[i]);
+
+	printk("%sCall Trace:\n", loglvl);
+	for (i = 0; i < 64; i++) {
+		if (eml_in_kernel_text(stack[i]))
+			printk("%s [<%016lx>]\n", loglvl, stack[i]);
+	}
 }
 
 long arch_ptrace(struct task_struct *child, long request, unsigned long addr,

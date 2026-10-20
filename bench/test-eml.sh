@@ -71,6 +71,10 @@ nocheck() {
 
 nocheck "unable to open an initial console"
 
+# Panic stack trace should appear (no rootfs = expected panic)
+check "Stack:"
+check "Call Trace:"
+
 echo "---"
 echo "$PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

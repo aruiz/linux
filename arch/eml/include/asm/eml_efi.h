@@ -150,7 +150,7 @@ struct eml_system_table {
 	struct eml_simple_text_output *con_out;
 	unsigned long std_err_handle;
 	struct eml_simple_text_output *std_err;
-	void *runtime_services;
+	efi_runtime_services_t *runtime_services;
 	struct eml_boot_services *boot_services;
 	unsigned long nr_tables;
 	void *tables;
@@ -225,6 +225,29 @@ struct eml_block_io {
 	efi_status_t(MSABI *flush_blocks)(struct eml_block_io *this);
 };
 
+/*
+ * EFI Loaded Image Protocol (partial — for command line access)
+ */
+#define EFI_LOADED_IMAGE_PROTOCOL_GUID                                     \
+	EFI_GUID(0x5b1b31a1, 0x9562, 0x11d2, 0x8e, 0x3f, 0x00, 0xa0, 0xc9, \
+		 0x69, 0x72, 0x3b)
+
+struct eml_loaded_image {
+	u32 revision;
+	efi_handle_t parent_handle;
+	void *system_table;
+	efi_handle_t device_handle;
+	void *file_path;
+	void *reserved;
+	u32 load_options_size;
+	void *load_options;
+	void *image_base;
+	u64 image_size;
+	u32 image_code_type;
+	u32 image_data_type;
+	void *unload;
+};
+
 /* Global EFI state */
 extern struct eml_system_table *eml_systab;
 extern efi_handle_t eml_image_handle;
@@ -233,5 +256,6 @@ extern efi_handle_t eml_image_handle;
 extern void eml_setup_early_console(void);
 extern void eml_setup_memory(void);
 extern void eml_setup_timer(void);
+extern void eml_parse_command_line(void);
 
 #endif /* _ASM_EML_EFI_H */
