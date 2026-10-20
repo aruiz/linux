@@ -49,8 +49,6 @@ typedef struct {
 #define __pgd(x) ((pgd_t){ (x) })
 #define __pgprot(x) ((pgprot_t){ (x) })
 
-extern unsigned long max_mapnr;
-
 #include <asm-generic/memory_model.h>
 #include <asm-generic/getorder.h>
 
