@@ -2,14 +2,22 @@
 /*
  * Linker script for EFI Mode Linux (EML)
  *
- * Lays out sections for a PE/COFF UEFI application. The PE header is
- * embedded in the .head section by head.S; objcopy -O binary produces
- * the final .efi image.
+ * PE/COFF layout with two sections:
+ *   .text — code, rodata, init (read-only/execute)
+ *   .data — writable data and BSS
+ *
+ * The PE headers are embedded in .head by head.S.
  */
+
+#include <asm-generic/vmlinux.lds.h>
+#include <asm/page.h>
+#include <asm/thread_info.h>
 
 OUTPUT_FORMAT("elf64-x86-64")
 OUTPUT_ARCH(i386:x86-64)
 ENTRY(eml_pe_header)
+
+jiffies = jiffies_64;
 
 SECTIONS
 {
@@ -19,53 +27,76 @@ SECTIONS
 		*(.head)
 	}
 
+	/* PE .text section: code + rodata + init */
+	_text = .;
 	.text : ALIGN(4096) {
 		_stext = .;
-		*(.text .text.*)
-		*(.init.text .init.text.*)
-		_etext = ALIGN(4096);
-		. = _etext;
+		HEAD_TEXT
+		TEXT_TEXT
+		SCHED_TEXT
+		LOCK_TEXT
+		IRQENTRY_TEXT
+		SOFTIRQENTRY_TEXT
+		NOINSTR_TEXT
+		*(.fixup)
+		*(.gnu.warning)
 	}
 
-	.rodata : ALIGN(4096) {
-		_srodata = .;
-		*(.rodata .rodata.*)
-		*(.init.rodata .init.rodata.*)
-		*(.srodata .srodata.*)
-		_erodata = ALIGN(4096);
-		. = _erodata;
+	/* Init text */
+	. = ALIGN(PAGE_SIZE);
+	__init_begin = .;
+	_sinittext = .;
+	.init.text : {
+		INIT_TEXT
 	}
+	_einittext = .;
 
-	.data : ALIGN(4096) {
-		_sdata = .;
-		_data = .;
-		*(.data .data.*)
-		*(.init.data .init.data.*)
-		_edata = ALIGN(512);
-		. = _edata;
+	/* Init data, setup, initcalls, console initcalls */
+	.init.data : {
+		INIT_DATA
+		INIT_SETUP(16)
+		INIT_CALLS
+		CON_INITCALL
+		INIT_RAM_FS
 	}
+	. = ALIGN(PAGE_SIZE);
+	__init_end = .;
 
-	.bss : ALIGN(4096) {
-		__bss_start = .;
-		*(.bss .bss.*)
-		*(COMMON)
-		__bss_stop = ALIGN(512);
-		. = __bss_stop;
-		_end = .;
-	}
+	/* Read-only data */
+	RO_DATA(PAGE_SIZE)
+
+	EXCEPTION_TABLE(16)
+
+	NOTES
+
+	_etext = ALIGN(4096);
+	. = _etext;
+
+	/* PE .data section: writable data + BSS */
+	. = ALIGN(4096);
+	_sdata = .;
+	_data = .;
+
+	RW_DATA(64, PAGE_SIZE, THREAD_SIZE)
+
+	_edata = .;
+
+	BSS_SECTION(PAGE_SIZE, PAGE_SIZE, PAGE_SIZE)
+	_end = .;
+
+	STABS_DEBUG
+	DWARF_DEBUG
+	ELF_DETAILS
 
 	/DISCARD/ : {
 		*(.discard .discard.*)
 		*(.modinfo .init.modinfo)
 		*(.comment)
-		*(.note.*)
 		*(.eh_frame*)
 		*(.got .got.plt)
 	}
 }
 
 /* Symbols used by the PE header in head.S */
-PROVIDE(__text_size = ABSOLUTE(_etext - _stext));
-PROVIDE(__rodata_size = ABSOLUTE(_erodata - _srodata));
 PROVIDE(__data_rawsize = ABSOLUTE(_edata - _data));
 PROVIDE(__data_size = ABSOLUTE(_end - _data));

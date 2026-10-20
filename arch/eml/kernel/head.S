@@ -107,6 +107,9 @@ eml_pe_header:
 	.globl		eml_pe_entry
 eml_pe_entry:
 	subq		$40, %rsp		/* shadow space for MS ABI */
+	/* Convert MS x64 ABI to System V: rcx→rdi, rdx→rsi */
+	movq		%rcx, %rdi
+	movq		%rdx, %rsi
 	call		eml_efi_entry
 	addq		$40, %rsp
 1:	hlt

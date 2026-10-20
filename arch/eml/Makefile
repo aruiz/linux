@@ -12,18 +12,17 @@ KBUILD_DEFCONFIG := defconfig
 HEADER_ARCH := x86
 
 # x86_64 UEFI application compiler flags
-KBUILD_CFLAGS += -m64 -mcmodel=small -fno-red-zone \
+KBUILD_CFLAGS += -m64 -mcmodel=small -mno-red-zone \
 		 -fshort-wchar -mno-mmx -mno-sse \
 		 -ffreestanding -fno-stack-protector \
 		 -fno-strict-aliasing \
 		 -fno-asynchronous-unwind-tables \
+		 -fPIE \
 		 -D__EML__ -D__KERNEL__
 
 KBUILD_AFLAGS += -m64 -D__EML__
 
 KBUILD_LDFLAGS += -m elf_x86_64 --no-undefined
-
-core-y += arch/eml/kernel/
 
 PHONY += linux.efi
 
@@ -31,16 +30,14 @@ all: linux.efi
 
 # The vmlinux ELF is converted to a flat binary which is the PE/COFF image
 # (the PE headers are embedded in the .head section by head.S)
-OBJCOPYFLAGS_linux.efi := -O binary
-$(obj)/arch/eml/boot/linux.efi: vmlinux FORCE
-	$(call if_changed,objcopy)
+quiet_cmd_efi = EFI     $@
+      cmd_efi = mkdir -p $(dir $@) && $(OBJCOPY) -O binary $< $@ && \
+		truncate -s %512 $@
 
-linux.efi: $(obj)/arch/eml/boot/linux.efi
-	@mkdir -p $(obj)/arch/eml/boot
-	@echo '  EFI     $@'
+arch/eml/boot/linux.efi: vmlinux FORCE
+	$(call if_changed,efi)
 
-archprepare:
-	@mkdir -p $(obj)/arch/eml/boot
+linux.efi: arch/eml/boot/linux.efi
 
 define archhelp
   echo '* linux.efi     - EFI application binary (arch/eml/boot/linux.efi)'
