@@ -1,0 +1,64 @@
+# SPDX-License-Identifier: GPL-2.0
+
+menu "EFI Mode Linux options"
+
+config EML
+	bool
+	default y
+	select 64BIT
+	select ARCH_HAS_FORTIFY_SOURCE
+	select GENERIC_IRQ_SHOW
+	select GENERIC_CPU_DEVICES
+	select NO_DMA
+	select NO_IOPORT_MAP
+	select HAVE_PAGE_SIZE_4KB
+	select HAVE_DEBUG_BUGVERBOSE
+	select THREAD_INFO_IN_TASK
+	select SPARSE_IRQ
+	select OF_EARLY_FLATTREE if OF
+
+config 64BIT
+	bool
+	default y
+
+config MMU
+	bool
+	default n
+
+config NO_IOMEM
+	bool
+	default y
+
+config GENERIC_CALIBRATE_DELAY
+	bool
+	default y
+
+config GENERIC_CSUM
+	bool
+	default y
+
+config GENERIC_HWEIGHT
+	bool
+	default y
+
+config HZ
+	int
+	default 100
+
+config LOCKDEP_SUPPORT
+	bool
+	default y
+
+config STACKTRACE_SUPPORT
+	bool
+	default y
+
+config PGTABLE_LEVELS
+	int
+	default 1
+
+config ARCH_DEFCONFIG
+	string
+	default "arch/eml/configs/defconfig"
+
+endmenu
