@@ -55,7 +55,21 @@ check "printk: legacy bootconsole \[eml0\] enabled"
 check "Zone ranges:"
 check "SLUB:"
 check "EML: timer event created"
+check "devtmpfs: initialized"
 check "efiblk0"
+
+# Verify no taint from disabled-interrupts warnings
+nocheck() {
+	if echo "$OUTPUT" | grep -q "$1"; then
+		echo "FAIL: unexpected '$1' in output" >&2
+		FAIL=$((FAIL + 1))
+	else
+		echo "PASS: (absent) $1"
+		PASS=$((PASS + 1))
+	fi
+}
+
+nocheck "unable to open an initial console"
 
 echo "---"
 echo "$PASS passed, $FAIL failed"
