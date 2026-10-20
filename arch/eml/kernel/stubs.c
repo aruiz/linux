@@ -16,6 +16,18 @@
 #include <asm/sections.h>
 #include <asm/eml_efi.h>
 
+#define MSR_STAR 0xC0000081
+#define MSR_LSTAR 0xC0000082
+#define MSR_SFMASK 0xC0000084
+#define X86_EFLAGS_IF 0x200
+
+static inline void wrmsr(u32 msr, u64 val)
+{
+	asm volatile("wrmsr"
+		     :
+		     : "c"(msr), "a"((u32)val), "d"((u32)(val >> 32)));
+}
+
 struct task_struct *eml_current_task = &init_task;
 unsigned long eml_irq_flags = 1;
 
@@ -32,8 +44,63 @@ void __init setup_arch(char **cmdline_p)
 	*cmdline_p = boot_command_line;
 }
 
+extern void eml_syscall_entry(void);
+
+static void __init eml_setup_syscall(void)
+{
+	/*
+	 * Set up SYSCALL/SYSRET MSRs.
+	 * STAR[47:32] = kernel CS selector for SYSCALL
+	 * STAR[63:48] = user CS selector base for SYSRET (unused — we
+	 *               don't call SYSRETQ, but the MSR must be set)
+	 * We use the UEFI-provided segments (CS is typically 0x38 in OVMF).
+	 * Since EML runs entirely in ring 0, SYSCALL stays at CPL 0.
+	 */
+	u16 cs;
+	u64 star;
+
+	asm volatile("mov %%cs, %0" : "=r"(cs));
+	star = ((u64)cs << 32) | ((u64)cs << 48);
+	wrmsr(MSR_STAR, star);
+	wrmsr(MSR_LSTAR, (u64)eml_syscall_entry);
+	wrmsr(MSR_SFMASK, X86_EFLAGS_IF);
+
+	pr_info("EML: SYSCALL entry at %px, CS=0x%x\n", eml_syscall_entry, cs);
+}
+
+void eml_return_to_user(struct pt_regs *regs)
+{
+	asm volatile("movq %0, %%rsp\n"
+		     "popq %%r15\n"
+		     "popq %%r14\n"
+		     "popq %%r13\n"
+		     "popq %%r12\n"
+		     "popq %%rbp\n"
+		     "popq %%rbx\n"
+		     "popq %%r11\n"
+		     "popq %%r10\n"
+		     "popq %%r9\n"
+		     "popq %%r8\n"
+		     "popq %%rax\n"
+		     "popq %%rcx\n"
+		     "popq %%rdx\n"
+		     "popq %%rsi\n"
+		     "popq %%rdi\n"
+		     "addq $8, %%rsp\n" /* skip orig_rax */
+		     "popq %%rcx\n" /* rip -> rcx for jmp */
+		     "addq $8, %%rsp\n" /* skip cs */
+		     "popfq\n" /* restore eflags */
+		     "popq %%rsp\n" /* restore user stack */
+		     "jmpq *%%rcx\n"
+		     :
+		     : "r"(regs)
+		     : "memory");
+	__builtin_unreachable();
+}
+
 void __init init_IRQ(void)
 {
+	eml_setup_syscall();
 }
 
 void __init time_init(void)

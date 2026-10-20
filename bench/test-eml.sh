@@ -78,6 +78,8 @@ check "EML: ESP volume"
 check "Initialized eml-drm"
 check "GOP.*stride=.*fb="
 check "DRM device registered"
+check "DRM test: rendered SMPTE color bars"
+check "EML: SYSCALL entry at"
 
 nocheck "unable to open an initial console"
 

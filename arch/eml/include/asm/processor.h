@@ -29,6 +29,16 @@ struct thread_struct {
 
 extern void ret_from_fork(void);
 
+#define start_thread(regs, new_ip, new_sp)      \
+	do {                                    \
+		memset(regs, 0, sizeof(*regs)); \
+		(regs)->rip = (new_ip);         \
+		(regs)->rsp = (new_sp);         \
+		(regs)->cs = 0;                 \
+		(regs)->ss = 0;                 \
+		(regs)->eflags = 0x200;         \
+	} while (0)
+
 static inline void cpu_relax(void)
 {
 	asm volatile("rep; nop" ::: "memory");

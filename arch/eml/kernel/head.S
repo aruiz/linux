@@ -192,8 +192,73 @@ ret_from_fork:
 	movq		%rax, %rdi
 	call		schedule_tail
 	testq		%rbx, %rbx
-	jz		1f
+	jz		.Lret_to_user
 	movq		%r12, %rdi
 	call		*%rbx
 1:	hlt
 	jmp		1b
+
+.Lret_to_user:
+	/*
+	 * Return to userspace after execve — pt_regs has the entry
+	 * point and stack pointer set by start_thread().
+	 * On NOMMU, user and kernel share the same address space and
+	 * privilege level, so we just load the registers and jump.
+	 */
+	movq		%rsp, %rdi
+	call		eml_return_to_user
+1:	hlt
+	jmp		1b
+
+/*
+ * eml_syscall_entry — SYSCALL instruction handler.
+ *
+ * On entry (set by the SYSCALL instruction):
+ *   RCX = return RIP, R11 = saved RFLAGS
+ *   RAX = syscall number
+ *   RDI, RSI, RDX, R10, R8, R9 = arguments
+ *
+ * On NOMMU EML, both "user" and "kernel" code run at ring 0.
+ * We skip SYSRETQ (which forces CPL=3) and instead return via
+ * restoring RFLAGS and jumping to the saved RIP.
+ */
+	.globl		eml_syscall_entry
+eml_syscall_entry:
+	pushq		%rcx			/* save return address */
+	pushq		%r11			/* save RFLAGS */
+
+	/* R10 carries arg4 (SYSCALL clobbers RCX) */
+	movq		%r10, %rcx
+
+	/* Bounds check */
+	cmpq		$EML_NR_syscalls, %rax
+	jae		.Lbad_syscall
+
+	/* Save callee-saved regs the C ABI requires */
+	pushq		%rbx
+	pushq		%rbp
+	pushq		%r12
+	pushq		%r13
+	pushq		%r14
+	pushq		%r15
+
+	leaq		sys_call_table(%rip), %r11
+	call		*(%r11, %rax, 8)
+
+	popq		%r15
+	popq		%r14
+	popq		%r13
+	popq		%r12
+	popq		%rbp
+	popq		%rbx
+
+.Lsyscall_return:
+	popq		%r11			/* saved RFLAGS */
+	popq		%rcx			/* return address */
+	pushq		%r11
+	popfq					/* restore RFLAGS */
+	jmpq		*%rcx			/* return to caller */
+
+.Lbad_syscall:
+	movq		$-38, %rax		/* -ENOSYS */
+	jmp		.Lsyscall_return

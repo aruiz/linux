@@ -19,8 +19,8 @@ typedef elf_greg_t elf_gregset_t[ELF_NGREG];
 typedef struct {
 } elf_fpregset_t;
 
-/* Stub - no ELF execution support */
-#define elf_check_arch(x) (0)
+#define elf_check_arch(x) \
+	((x)->e_machine == EM_X86_64 && (x)->e_ident[EI_CLASS] == ELFCLASS64)
 #define ELF_EXEC_PAGESIZE PAGE_SIZE
 #define ELF_ET_DYN_BASE (TASK_SIZE / 3 * 2)
 #define ELF_PLATFORM "eml"

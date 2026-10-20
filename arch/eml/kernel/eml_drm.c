@@ -212,6 +212,32 @@ static int eml_drm_probe(struct platform_device *pdev)
 		return ret;
 
 	dev_info(&pdev->dev, "DRM device registered\n");
+
+	/* Render a test pattern directly to the GOP framebuffer */
+	{
+		u32 *pixels = (u32 *)eml->fb_vaddr;
+		u32 ppl = eml->stride / 4;
+		u32 x, y;
+		u32 bar_w = eml->width / 8;
+		u32 colors[8] = {
+			0x00FFFFFF, 0x00FFFF00, 0x0000FFFF, 0x0000FF00,
+			0x00FF00FF, 0x00FF0000, 0x000000FF, 0x00000000,
+		};
+
+		for (y = 0; y < eml->height; y++) {
+			for (x = 0; x < eml->width; x++) {
+				u32 bar = x / (bar_w ? bar_w : 1);
+
+				if (bar > 7)
+					bar = 7;
+				pixels[y * ppl + x] = colors[bar];
+			}
+		}
+		dev_info(&pdev->dev,
+			 "DRM test: rendered SMPTE color bars %ux%u\n",
+			 eml->width, eml->height);
+	}
+
 	return 0;
 }
 
