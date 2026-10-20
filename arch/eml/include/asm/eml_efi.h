@@ -77,7 +77,10 @@ struct eml_boot_services {
 	efi_status_t(MSABI *check_event)(void *event);
 
 	/* Protocol handler services */
-	void *install_protocol_interface;
+	efi_status_t(MSABI *install_protocol_interface)(efi_handle_t *handle,
+							efi_guid_t *protocol,
+							u32 interface_type,
+							void *interface);
 	void *reinstall_protocol_interface;
 	void *uninstall_protocol_interface;
 	efi_status_t(MSABI *handle_protocol)(efi_handle_t handle,
@@ -94,8 +97,14 @@ struct eml_boot_services {
 	void *install_configuration_table;
 
 	/* Image services */
-	void *load_image;
-	void *start_image;
+	efi_status_t(MSABI *load_image)(int boot_policy,
+					efi_handle_t parent_image_handle,
+					void *device_path, void *source_buffer,
+					unsigned long source_size,
+					efi_handle_t *image_handle);
+	efi_status_t(MSABI *start_image)(efi_handle_t image_handle,
+					 unsigned long *exit_data_size,
+					 efi_char16_t **exit_data);
 	void *exit;
 	void *unload_image;
 	void *exit_boot_services;
@@ -363,5 +372,6 @@ extern void eml_setup_early_console(void);
 extern void eml_setup_memory(void);
 extern void eml_setup_timer(void);
 extern void eml_parse_command_line(void);
+extern void eml_boot_kernel(void);
 
 #endif /* _ASM_EML_EFI_H */

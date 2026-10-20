@@ -33,6 +33,7 @@ unsigned long eml_irq_flags = 1;
 
 extern char eml_cmdline[];
 extern void eml_dump_memory_map(void);
+extern void eml_boot_kernel(void);
 
 void __init setup_arch(char **cmdline_p)
 {
@@ -40,6 +41,7 @@ void __init setup_arch(char **cmdline_p)
 	eml_setup_early_console();
 	eml_dump_memory_map();
 	eml_parse_command_line();
+	eml_boot_kernel();
 	strscpy(boot_command_line, eml_cmdline, COMMAND_LINE_SIZE);
 	*cmdline_p = boot_command_line;
 }
