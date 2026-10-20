@@ -38,6 +38,15 @@ void __init time_init(void)
 	eml_setup_timer();
 }
 
+extern void eml_process_ticks(void);
+extern void eml_kbd_poll(void);
+
+void arch_cpu_idle(void)
+{
+	eml_process_ticks();
+	eml_kbd_poll();
+}
+
 void machine_halt(void)
 {
 	for (;;)
@@ -167,9 +176,58 @@ int syscall_get_arch(struct task_struct *task)
 	return 0;
 }
 
+static void eml_cpuid(u32 leaf, u32 *eax, u32 *ebx, u32 *ecx, u32 *edx)
+{
+	asm volatile("cpuid"
+		     : "=a"(*eax), "=b"(*ebx), "=c"(*ecx), "=d"(*edx)
+		     : "a"(leaf), "c"(0));
+}
+
 static int eml_cpuinfo_show(struct seq_file *m, void *v)
 {
-	seq_puts(m, "processor\t: 0\nmodel name\t: EFI Mode Linux\n");
+	u32 eax, ebx, ecx, edx;
+	u32 brand[12];
+	u32 family, model, stepping;
+	int i;
+
+	seq_puts(m, "processor\t: 0\n");
+
+	/* Get vendor string */
+	eml_cpuid(0, &eax, &ebx, &ecx, &edx);
+	seq_printf(m, "vendor_id\t: %.4s%.4s%.4s\n", (char *)&ebx, (char *)&edx,
+		   (char *)&ecx);
+
+	/* Get family/model/stepping */
+	eml_cpuid(1, &eax, &ebx, &ecx, &edx);
+	family = (eax >> 8) & 0xf;
+	model = (eax >> 4) & 0xf;
+	stepping = eax & 0xf;
+	if (family == 0xf)
+		family += (eax >> 20) & 0xff;
+	if (family >= 6)
+		model += ((eax >> 16) & 0xf) << 4;
+
+	seq_printf(m, "cpu family\t: %u\n", family);
+	seq_printf(m, "model\t\t: %u\n", model);
+	seq_printf(m, "stepping\t: %u\n", stepping);
+
+	/* Get brand string (leaves 0x80000002-0x80000004) */
+	eml_cpuid(0x80000000, &eax, &ebx, &ecx, &edx);
+	if (eax >= 0x80000004) {
+		for (i = 0; i < 3; i++)
+			eml_cpuid(0x80000002 + i, &brand[i * 4],
+				  &brand[i * 4 + 1], &brand[i * 4 + 2],
+				  &brand[i * 4 + 3]);
+		seq_printf(m, "model name\t: %s\n", (char *)brand);
+	} else {
+		seq_puts(m, "model name\t: EFI Mode Linux\n");
+	}
+
+	seq_puts(m, "flags\t\t: eml efi nommu\n");
+	seq_puts(m, "bogomips\t: ");
+	seq_printf(m, "%lu.%02lu\n", loops_per_jiffy / (500000 / HZ),
+		   (loops_per_jiffy / (5000 / HZ)) % 100);
+
 	return 0;
 }
 
